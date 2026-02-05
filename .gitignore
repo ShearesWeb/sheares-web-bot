@@ -4,6 +4,8 @@
 **/coverage
 
 .venv/
+*.pyc
+__pycache__/
 
 # Environment variables
 .env
