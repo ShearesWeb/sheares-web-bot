@@ -2,7 +2,7 @@ locals {
   apigw_name = "${var.env}-web-apigw-${var.project_code}"
 }
 
-module "api" {
+module "apigw" {
   source = "./modules/apigw"
   name   = local.apigw_name
 }
