@@ -70,6 +70,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not message:
         return
 
+    await message.reply_text(REPLY_TEXT, parse_mode=None)
     await message.reply_text(HELP_TEXT, parse_mode=None)
 
 
