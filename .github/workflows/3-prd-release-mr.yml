@@ -41,7 +41,6 @@ jobs:
         working-directory: infra
         env:
           TF_VAR_telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TF_VAR_telegram_channel_id: ${{ secrets.TELEGRAM_CHANNEL_ID }}
         run: |
           terraform init -input=false
           terraform workspace select -or-create prd-app
