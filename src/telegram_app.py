@@ -46,7 +46,6 @@ async def handle_ff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not message:
         return
 
-    await message.reply_text(REPLY_TEXT, parse_mode=None)
     await message.reply_poll(
         question="What food should we get?",
         options=FOOD_POLL_OPTIONS,
@@ -59,7 +58,6 @@ async def handle_slurp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not message:
         return
 
-    await message.reply_text(REPLY_TEXT, parse_mode=None)
     await message.reply_poll(
         question="What dessert / BBT should we get?",
         options=SLURP_POLL_OPTIONS,
