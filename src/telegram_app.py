@@ -21,23 +21,6 @@ NUMBER_STICKER_FILE_ID = (
 )
 
 
-async def handle_poll(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    if not message or not message.poll:
-        return
-
-    try:
-        await message.reply_text(REPLY_TEXT, parse_mode=None)
-    except Exception as exc:
-        LOG.warning("Reply failed, sending fallback message: %s", exc)
-        try:
-            await context.bot.send_message(
-                chat_id=message.chat_id, text=REPLY_TEXT, parse_mode=None
-            )
-        except Exception as fallback_exc:
-            LOG.error("Fallback send failed: %s", fallback_exc)
-
-
 async def handle_number_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message:
@@ -53,6 +36,27 @@ async def handle_number_message(update: Update, context: ContextTypes.DEFAULT_TY
         LOG.error("Failed to send sticker: %s", exc)
 
 
+async def handle_grab_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if not message:
+        return
+
+    text = (message.text or message.caption or "").lower()
+    if "grab.com" not in text:
+        return
+
+    try:
+        await message.reply_text(REPLY_TEXT, parse_mode=None)
+    except Exception as exc:
+        LOG.warning("Reply failed, sending fallback message: %s", exc)
+        try:
+            await context.bot.send_message(
+                chat_id=message.chat_id, text=REPLY_TEXT, parse_mode=None
+            )
+        except Exception as fallback_exc:
+            LOG.error("Fallback send failed: %s", fallback_exc)
+
+
 def get_bot_token() -> str:
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
     if not bot_token:
@@ -62,6 +66,6 @@ def get_bot_token() -> str:
 
 def build_application(bot_token: str):
     application = ApplicationBuilder().token(bot_token).build()
-    application.add_handler(MessageHandler(filters.POLL, handle_poll))
+    application.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_grab_link))
     application.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_number_message))
     return application
