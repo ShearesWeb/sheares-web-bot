@@ -82,8 +82,11 @@ async def handle_ff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     LOG.info("Handling /ff for chat_id=%s", message.chat_id)
 
+    user = update.effective_user
+    name = user.first_name if user and user.first_name else "Someone"
+
     await message.reply_poll(
-        question="What food should we get?",
+        question=f"What food should we get? (Requested by {name})",
         options=FOOD_POLL_OPTIONS,
         allows_multiple_answers=True,
         is_anonymous=False,
@@ -96,8 +99,11 @@ async def handle_slurp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     LOG.info("Handling /slurp for chat_id=%s", message.chat_id)
 
+    user = update.effective_user
+    name = user.first_name if user and user.first_name else "Someone"
+
     await message.reply_poll(
-        question="What dessert / BBT should we get?",
+        question=f"What dessert / BBT should we get? (Requested by {name})",
         options=SLURP_POLL_OPTIONS,
         allows_multiple_answers=True,
         is_anonymous=False,
@@ -110,7 +116,7 @@ async def handle_rizz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     LOG.info("Handling /rizz for chat_id=%s", message.chat_id)
 
     user = update.effective_user
-    default_name = user.first_name if user and user.first_name else "unknown"
+    default_name = user.first_name if user and user.first_name else "someone"
 
     args = context.args or []
     person_a = args[0] if len(args) > 0 else default_name
