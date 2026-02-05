@@ -1,0 +1,23 @@
+# .github/workflows/ci-merge-request.yml
+name: Merge Request CI
+
+# Trigger:
+# - Runs when a pull request targets the `main` branch
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  docker-build-smoke-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. ⬇️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 2. 🛠️ Build Docker Image
+        run: docker build -t lambda-docker .
+
+      - name: 3. 🔍 Smoke Test Docker Container
+        run: timeout 10 docker run --rm lambda-docker || [[ $? -eq 124 ]]

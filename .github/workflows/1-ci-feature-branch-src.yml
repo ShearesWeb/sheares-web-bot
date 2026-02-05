@@ -1,0 +1,48 @@
+# .github/workflows/ci-feature-branch.yml
+name: Feature Branch CI (src)
+
+# Triggers:
+# - Manual trigger via GitHub UI from branches (workflow_dispatch)
+# - Automatic on pushes to specific feature branches
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'feat/**'
+      - 'feature/**'
+      - 'JIRA/**'
+    paths:
+      - src/**
+
+jobs:
+  lint-and-unit-tests:
+    name: Static Analysis & Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: 📦 Install Dependencies
+        working-directory: src
+        run: npm ci
+
+      - name: 🧹 Run Linter
+        working-directory: src
+        run: npm run lint
+
+      - name: 🧪 Run Unit Tests
+        working-directory: src
+        run: npm test -- --coverage --passWithNoTests
+
+      - name: 📄 Upload Test Coverage Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-coverage
+          path: src/coverage

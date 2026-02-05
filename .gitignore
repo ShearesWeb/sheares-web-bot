@@ -1,0 +1,38 @@
+# Node.js
+**/node_modules/
+**/dist/
+**/coverage
+
+.venv/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Local .terraform directories
+**/.terraform/*
+
+# AWS credentials file (if any)
+.aws
+*/.aws
+
+# .tfstate and lock files
+*.tfstate
+*.tfstate.*
+*.terraform.lock.hcl
+
+# Ignore override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+# Env specific properties file
+*/*.liquibase.properties
+!*/template.liquibase.properties
