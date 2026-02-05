@@ -7,5 +7,5 @@ output "function_name" {
 }
 
 output "api_gateway_invoke_url" {
-  value = module.apigw.api.invoke_url
+  value = module.apigw.api.api_endpoint
 }
