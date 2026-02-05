@@ -36,12 +36,14 @@ HELP_TEXT = "\n".join(
         "Available commands:",
         "/ff - Food poll",
         "/slurp - Dessert / BBT poll",
-        "/rizz [person_a] [person_b (optional)] - Random rizz line",
+        "/rizz [person_a] [person_b] - Random rizz line",
         "/make_sticker - Add as image caption to make a sticker",
         "/help - Show this help",
         "",
         "Auto responses:",
         "Send any message with 6 or 7 to get the sticker.",
+        "",
+        "Any questions or suggestions? Contact @danielzqx, @chenjianrong or any member of the Sheares Web team and we'll think of implementing your feature!",
     ]
 )
 
@@ -80,7 +82,6 @@ async def handle_ff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     LOG.info("Handling /ff for chat_id=%s", message.chat_id)
 
-    await message.reply_text(REPLY_TEXT, parse_mode=None)
     await message.reply_poll(
         question="What food should we get?",
         options=FOOD_POLL_OPTIONS,
@@ -95,7 +96,6 @@ async def handle_slurp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     LOG.info("Handling /slurp for chat_id=%s", message.chat_id)
 
-    await message.reply_text(REPLY_TEXT, parse_mode=None)
     await message.reply_poll(
         question="What dessert / BBT should we get?",
         options=SLURP_POLL_OPTIONS,
