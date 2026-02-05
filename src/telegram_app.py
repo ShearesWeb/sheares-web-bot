@@ -36,12 +36,14 @@ HELP_TEXT = "\n".join(
         "Available commands:",
         "/ff - Food poll",
         "/slurp - Dessert / BBT poll",
-        "/rizz [person_a] [person_b (optional)] - Random rizz line",
+        "/rizz [person_a] [person_b] - Random rizz line",
         "/make_sticker - Add as image caption to make a sticker",
         "/help - Show this help",
         "",
         "Auto responses:",
         "Send any message with 6 or 7 to get the sticker.",
+        "",
+        "Any questions or suggestions? Contact @danielzqx, @chenjianrong or any member of the Sheares Web team and we'll think of implementing your feature!",
     ]
 )
 
