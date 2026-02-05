@@ -21,40 +21,33 @@ NUMBER_STICKER_FILE_ID = (
 )
 
 
-async def handle_number_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message:
         return
 
     text = message.text or message.caption or ""
-    if "6" not in text and "7" not in text:
-        return
+    lower_text = text.lower()
 
-    try:
-        await context.bot.send_sticker(chat_id=message.chat_id, sticker=NUMBER_STICKER_FILE_ID)
-    except Exception as exc:
-        LOG.error("Failed to send sticker: %s", exc)
-
-
-async def handle_grab_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    if not message:
-        return
-
-    text = (message.text or message.caption or "").lower()
-    if "grab.com" not in text:
-        return
-
-    try:
-        await message.reply_text(REPLY_TEXT, parse_mode=None)
-    except Exception as exc:
-        LOG.warning("Reply failed, sending fallback message: %s", exc)
+    if "grab.com" in lower_text:
         try:
-            await context.bot.send_message(
-                chat_id=message.chat_id, text=REPLY_TEXT, parse_mode=None
+            await message.reply_text(REPLY_TEXT, parse_mode=None)
+        except Exception as exc:
+            LOG.warning("Reply failed, sending fallback message: %s", exc)
+            try:
+                await context.bot.send_message(
+                    chat_id=message.chat_id, text=REPLY_TEXT, parse_mode=None
+                )
+            except Exception as fallback_exc:
+                LOG.error("Fallback send failed: %s", fallback_exc)
+
+    if "6" in text or "7" in text:
+        try:
+            await context.bot.send_sticker(
+                chat_id=message.chat_id, sticker=NUMBER_STICKER_FILE_ID
             )
-        except Exception as fallback_exc:
-            LOG.error("Fallback send failed: %s", fallback_exc)
+        except Exception as exc:
+            LOG.error("Failed to send sticker: %s", exc)
 
 
 def get_bot_token() -> str:
@@ -66,6 +59,5 @@ def get_bot_token() -> str:
 
 def build_application(bot_token: str):
     application = ApplicationBuilder().token(bot_token).build()
-    application.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_grab_link))
-    application.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_number_message))
+    application.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_message))
     return application
