@@ -9,7 +9,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket               = "com-all-bucket-tfstate-shearesweb"
+    bucket               = "com-ops-bucket-tfstate-shweb-759655304761-ap-southeast-1-an"
     key                  = "sheareswebbot.tfstate"
     workspace_key_prefix = "tf-state"
     region               = "ap-southeast-1"
