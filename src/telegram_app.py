@@ -19,9 +19,7 @@ REPLY_TEXT = "\n\n".join(
         "🔗 https://nus.syd1.qualtrics.com/jfe/form/SV_5jURdLp4j5Yxeaq",
     ]
 )
-NUMBER_STICKER_FILE_ID = (
-    "CAACAgIAAyEFAASb_-ZOAAIBoGmEsbMw7p38xCOcv2n7n4l10JkYAALDjQACT0-gSn3s_kVfc7_AOAQ"
-)
+YEE_CHING_VIDEO_PATH = os.path.join(os.path.dirname(__file__), "assets", "yee_ching.mp4")
 FOOD_POLL_OPTIONS = [
     "McDonald's",
     "Fatty Bom Bom",
@@ -38,10 +36,8 @@ HELP_TEXT = "\n".join(
         "/slurp - Dessert / BBT poll",
         "/rizz [person_a] [person_b] - Random rizz line",
         "/make_sticker - Add as image caption to make a sticker",
+        "/yee_ching_files - Send the Yee Ching video",
         "/help - Show this help",
-        "",
-        "Auto responses:",
-        "Send any message with 6 or 7 to get the sticker.",
         "",
         "Any questions or suggestions? Contact @danielzqx, @chenjianrong or any member of the Sheares Web team and we'll think of implementing your feature!",
     ]
@@ -168,21 +164,20 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await message.reply_text(HELP_TEXT, parse_mode=None)
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_yee_ching_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message:
         return
-    LOG.info("Handling message for chat_id=%s", message.chat_id)
+    LOG.info("Handling /yee_ching_files for chat_id=%s", message.chat_id)
 
-    text = message.text or message.caption or ""
-
-    if "6" in text or "7" in text:
-        try:
-            await context.bot.send_sticker(
-                chat_id=message.chat_id, sticker=NUMBER_STICKER_FILE_ID
+    try:
+        with open(YEE_CHING_VIDEO_PATH, "rb") as video_file:
+            await message.reply_video(
+                video=InputFile(video_file, filename="yee_ching.mp4")
             )
-        except Exception as exc:
-            LOG.error("Failed to send sticker: %s", exc)
+    except Exception as exc:
+        LOG.exception("Failed to send Yee Ching video: %s", exc)
+        await message.reply_text("Sorry, I couldn't send the video.", parse_mode=None)
 
 
 def get_bot_token() -> str:
@@ -197,9 +192,9 @@ def build_application(bot_token: str):
     application.add_handler(CommandHandler("ff", handle_ff))
     application.add_handler(CommandHandler("slurp", handle_slurp))
     application.add_handler(CommandHandler("rizz", handle_rizz))
+    application.add_handler(CommandHandler("yee_ching_files", handle_yee_ching_files))
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(
         MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_make_sticker_image)
     )
-    application.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_message))
     return application
