@@ -19,7 +19,7 @@ REPLY_TEXT = "\n\n".join(
         "🔗 https://nus.syd1.qualtrics.com/jfe/form/SV_5jURdLp4j5Yxeaq",
     ]
 )
-YEE_CHING_VIDEO_PATH = os.path.join(os.path.dirname(__file__), "assets", "yee_ching.mp4")
+
 FOOD_POLL_OPTIONS = [
     "McDonald's",
     "Fatty Bom Bom",
@@ -164,22 +164,6 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await message.reply_text(HELP_TEXT, parse_mode=None)
 
 
-async def handle_yee_ching_files(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    if not message:
-        return
-    LOG.info("Handling /yee_ching_files for chat_id=%s", message.chat_id)
-
-    try:
-        with open(YEE_CHING_VIDEO_PATH, "rb") as video_file:
-            await message.reply_video(
-                video=InputFile(video_file, filename="yee_ching.mp4")
-            )
-    except Exception as exc:
-        LOG.exception("Failed to send Yee Ching video: %s", exc)
-        await message.reply_text("Sorry, I couldn't send the video.", parse_mode=None)
-
-
 def get_bot_token() -> str:
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
     if not bot_token:
@@ -192,7 +176,6 @@ def build_application(bot_token: str):
     application.add_handler(CommandHandler("ff", handle_ff))
     application.add_handler(CommandHandler("slurp", handle_slurp))
     application.add_handler(CommandHandler("rizz", handle_rizz))
-    application.add_handler(CommandHandler("yee_ching_files", handle_yee_ching_files))
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(
         MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_make_sticker_image)
