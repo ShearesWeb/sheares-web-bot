@@ -18,7 +18,7 @@ module "lambda_function" {
   ephemeral_storage_size = 512
 
   environment_variables = {
-    # DYNAMODB_TABLE_NAME = aws_dynamodb_table.table.name
-    TELEGRAM_BOT_TOKEN = var.telegram_bot_token
+    DYNAMODB_TABLE_NAME = aws_dynamodb_table.table.name
+    TELEGRAM_BOT_TOKEN  = var.telegram_bot_token
   }
 }

@@ -9,21 +9,24 @@ module "lambda_execution_role" {
   policy_attachments = [
     "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
   ]
-  # custom_policy = {
-  #   name = local.lambda_execution_policy_name
-  #   statements = {
-  #     DynamodbPermissions = {
-  #       effect = "Allow"
-  #       actions = [
-  #         "dynamodb:PutItem",
-  #         "dynamodb:GetItem",
-  #         "dynamodb:UpdateItem",
-  #       ]
-  #       resources = [
-  #         aws_dynamodb_table.table.arn
-  #       ]
-  #     }
-  #   }
-  # }
+  custom_policy = {
+    name = local.lambda_execution_policy_name
+    statements = {
+      DynamodbPermissions = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+          "dynamodb:Query",
+        ]
+        resources = [
+          aws_dynamodb_table.table.arn,
+          "${aws_dynamodb_table.table.arn}/index/*",
+        ]
+      }
+    }
+  }
 }
 
