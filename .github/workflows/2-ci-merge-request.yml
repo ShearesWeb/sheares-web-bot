@@ -1,8 +1,19 @@
-# .github/workflows/ci-merge-request.yml
+# .github/workflows/2-ci-merge-request.yml
 name: Merge Request CI
 
 # Trigger:
-# - Runs when a pull request targets the `main` branch
+# - Runs when a pull request targets the `main` branch.
+#
+# Purpose: verify the Lambda container actually builds and boots before the
+# PR merges (merging to main auto-deploys to prod — see 3-prd-release-mr.yml
+# — so this is the only gate standing between a broken image and production).
+#
+# The "smoke test" step starts the built image and lets it run for 10s. The
+# Lambda base image's runtime interface client sits waiting for an invocation
+# rather than exiting, so a healthy container gets killed by `timeout` (exit
+# code 124) — that counts as a pass. Any other exit code means the container
+# crashed on startup (e.g. a missing import, bad Dockerfile step) and fails
+# the job.
 on:
   pull_request:
     branches:
@@ -10,6 +21,7 @@ on:
 
 jobs:
   docker-build-smoke-test:
+    name: 🐳 Build & Smoke Test Lambda Image
     runs-on: ubuntu-latest
 
     steps:
