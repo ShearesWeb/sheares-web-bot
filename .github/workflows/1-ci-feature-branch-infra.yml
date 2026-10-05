@@ -1,19 +1,9 @@
-# .github/workflows/1-ci-feature-branch-infra.yml
+# .github/workflows/ci-feature-branch.yml
 name: Feature Branch CI (infra)
 
-# Trigger:
-# - Automatic on every push to a feat/**, feature/** or JIRA/** branch, but
-#   ONLY when files under infra/** changed — Terraform is the one thing this
-#   job checks, so there's no point running it for a Python-only commit.
-# - workflow_dispatch, for re-running by hand from the GitHub UI.
-#
-# Purpose: catch `terraform fmt` drift as early as possible (on every push),
-# before a PR is even opened, so reviewers aren't the ones flagging it.
-#
-# Known gap: there's no equivalent fast-feedback job for src/** (the Python
-# Lambda code) — this repo has no lint config or test suite yet, so the only
-# CI signal Python changes get today is the docker build + smoke test in
-# 2-ci-merge-request.yml, which only runs once a PR is opened.
+# Triggers:
+# - Manual trigger via GitHub UI from branches (workflow_dispatch)
+# - Automatic on pushes to specific feature branches
 on:
   workflow_dispatch:
   push:
@@ -21,6 +11,8 @@ on:
       - 'feat/**'
       - 'feature/**'
       - 'JIRA/**'
+    # hotfix: trigger only when infra files change.
+    # consider ways to do this for seperate jobs
     paths:
       - infra/**
 
@@ -40,4 +32,4 @@ jobs:
 
       - name: 3. 🧪 Check Terraform Syntax
         working-directory: infra
-        run: terraform fmt -check
+        run: terraform fmt -check	

@@ -1,20 +1,6 @@
-# .github/workflows/4-prd-release-tag.yml
+# .github/workflows/prd-deployment.yml
 name: Production Release
 
-# Trigger:
-# - workflow_dispatch — run by hand from the GitHub UI / CLI against any ref,
-#   used to redeploy prd without merging new code (e.g. re-applying infra,
-#   or a rollback by dispatching against an older vX.Y.Z tag).
-# - push of a vX.Y.Z tag — covers a tag pushed manually. Note this normally
-#   does NOT get triggered by the vX.Y.Z tag that 3-prd-release-mr.yml
-#   creates after a merge, since that tag is pushed with the default
-#   GITHUB_TOKEN and GitHub doesn't re-trigger workflows from that token's
-#   own pushes. So in practice this path fires for a human-pushed tag.
-#
-# Same two deploy steps as 3-prd-release-mr.yml (terraform apply, then build
-# + push + point Lambda at the new image) — kept here as a separate,
-# independent entry point rather than reusing that workflow, so a manual
-# redeploy never depends on a pull_request event existing.
 on:
   workflow_dispatch:
   push:
@@ -32,34 +18,31 @@ jobs:
       FUNCTION_NAME: ${{ steps.deploy.outputs.function_name }}
 
     steps:
-      # Guards against dispatching this workflow against a branch or an
-      # arbitrary commit — a prd deploy should only ever run from a
-      # released vX.Y.Z tag.
-      - name: 1. 🧪 Validate Tag Format
+      - name: 🧪 Validate tag format
         run: |
           if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "❌ Invalid tag format: $GITHUB_REF"
             exit 1
           fi
 
-      - name: 2. ⬇️ Checkout Code
+      - name: ⬇️ Checkout Code
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: 3. 🔐 Configure AWS Credentials
+      - name: 🔐 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: 4. ⚙️ Setup Terraform CLI
+      - name: ⚙️ Setup Terraform CLI
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.0"
 
-      - name: 5. 🚀 Apply Terraform for Production Infra
+      - name: 🚀 Apply Terraform for Production Infra
         id: deploy
         working-directory: infra
         env:
@@ -72,7 +55,7 @@ jobs:
           echo "ECR_REPOSITORY_URL=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
           echo "FUNCTION_NAME=$(terraform output -raw function_name)" >> $GITHUB_OUTPUT
 
-
+ 
   docker-deploy-prd:
     name: Build & Deploy Docker to Lambda (prd)
     runs-on: ubuntu-latest
@@ -112,3 +95,4 @@ jobs:
           aws lambda update-function-code \
             --function-name ${{ needs.infra-deploy-prd.outputs.FUNCTION_NAME }} \
             --image-uri ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
+   

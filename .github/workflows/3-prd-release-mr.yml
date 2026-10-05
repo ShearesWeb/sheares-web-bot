@@ -1,25 +1,6 @@
-# .github/workflows/3-prd-release-mr.yml
+# .github/workflows/prd-deployment.yml
 name: Production Release
 
-# Trigger:
-# - Runs when a pull request into `main` is closed AND merged (the `if` on
-#   infra-deploy-prd below is what actually enforces "merged", not just
-#   "closed" — a closed-without-merge PR does nothing here).
-#
-# There is no staging/preprod environment in this project — a merge to
-# `main` deploys straight to production. This workflow IS that deploy:
-#   1. infra-deploy-prd — terraform apply against the prd workspace.
-#   2. docker-deploy-prd — build the Lambda image, push to ECR, point the
-#      Lambda function at the new image.
-#   3. create-semantic-tag — tags the commit vX.Y.Z (patch bump) purely as a
-#      historical marker of what shipped. Because it's pushed with the
-#      built-in GITHUB_TOKEN, this tag push does NOT re-trigger
-#      4-prd-release-tag.yml (GitHub suppresses workflow runs triggered by
-#      the default token) — so this doesn't cause a second, redundant
-#      deploy.
-#
-# 4-prd-release-tag.yml covers the other case: manually re-deploying (e.g.
-# a rollback to an older tag) without merging new code.
 on:
   pull_request:
     types: [closed]
@@ -110,22 +91,18 @@ jobs:
             --image-uri ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
 
 
-  # Tags the merged commit as a historical record of what's live in prd.
-  # See the header comment above for why this doesn't double-trigger a deploy.
   create-semantic-tag:
-    name: 🏷️ Tag Release Commit
     runs-on: ubuntu-latest
     needs:
       - docker-deploy-prd
     permissions: write-all
 
     steps:
-      - name: 1. ⬇️ Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 2. 🔢 Bump Version and Push Tag
+      - name: Bump version and push tag
         id: tag_version
         uses: anothrNick/github-tag-action@v1
         env:
@@ -134,5 +111,4 @@ jobs:
           WITH_V: true
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 3. 📣 Announce New Tag
-        run: echo "New tag ${{ steps.tag_version.outputs.new_tag }}"
+      - run: echo "New tag ${{ steps.tag_version.outputs.new_tag }}"
