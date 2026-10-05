@@ -3,6 +3,9 @@ locals {
   lambda_execution_policy_name = "${var.env}-mgmt-iampolicy-${var.project_code}"
 }
 
+data "aws_caller_identity" "current" {}
+
+# Shared by the receiver, processor and notifier functions.
 module "lambda_execution_role" {
   source = "./modules/iam_role"
   name   = local.lambda_execution_role_name
@@ -18,15 +21,31 @@ module "lambda_execution_role" {
           "dynamodb:PutItem",
           "dynamodb:GetItem",
           "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
           "dynamodb:Query",
         ]
         resources = [
-          aws_dynamodb_table.table.arn,
-          "${aws_dynamodb_table.table.arn}/index/*",
+          aws_dynamodb_table.users.arn,
+          aws_dynamodb_table.laundry_machines.arn,
         ]
+      }
+      InvokeProcessor = {
+        effect    = "Allow"
+        actions   = ["lambda:InvokeFunction"]
+        resources = [module.processor_function.function.arn]
+      }
+      SchedulerPermissions = {
+        effect  = "Allow"
+        actions = ["scheduler:CreateSchedule"]
+        resources = [
+          "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Laundry_*",
+        ]
+      }
+      # CreateSchedule hands the scheduler role to EventBridge, which needs PassRole.
+      PassSchedulerRole = {
+        effect    = "Allow"
+        actions   = ["iam:PassRole"]
+        resources = [module.scheduler_execution_role.role.arn]
       }
     }
   }
 }
-

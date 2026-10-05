@@ -5,8 +5,11 @@ FROM public.ecr.aws/lambda/python:3.12
 COPY ./src/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt -t ${LAMBDA_TASK_ROOT}
 
-# Copy application code
-COPY ./src/*.py ${LAMBDA_TASK_ROOT}/
+# Copy application code. All three functions ship in this one image; each
+# Lambda selects its handler through image_config in infra/lambda.tf.
+COPY ./src/receiver ${LAMBDA_TASK_ROOT}/receiver
+COPY ./src/processor ${LAMBDA_TASK_ROOT}/processor
+COPY ./src/notifier ${LAMBDA_TASK_ROOT}/notifier
 
-# Set the Lambda handler
-CMD [ "app.handler" ]
+# Default handler for running the image locally
+CMD [ "receiver.lambda_function.lambda_handler" ]

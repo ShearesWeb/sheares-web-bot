@@ -1,14 +1,11 @@
 import os
 import boto3
 
-sts_client = boto3.client('sts')
-identity = sts_client.get_caller_identity()
-account_id = identity['Account']
-sqs = boto3.client('sqs')
+lambda_client = boto3.client('lambda')
 
-SQS_URL = f"https://sqs.ap-southeast-1.amazonaws.com/{account_id}/preprod-sqs-shearesbot"
+PROCESSOR_FUNCTION_NAME = os.environ["PROCESSOR_FUNCTION_NAME"]
 
-# Handles incoming messages to tele bot and places then in a SQS queue to be processed
+# Handles incoming messages to tele bot and hands them to the processor asynchronously
 def lambda_handler(event, context):
     try:
         # API Gateway passes the Telegram JSON as a string inside 'body'
@@ -16,10 +13,12 @@ def lambda_handler(event, context):
         if not body:
             return {"statusCode": 200, "body": "Empty request"}
             
-        # Throw the raw string directly into SQS
-        sqs.send_message(
-            QueueUrl=SQS_URL,
-            MessageBody=body
+        # Async invoke returns as soon as Lambda queues the event, so the processor's
+        # work doesn't hold up the webhook response.
+        lambda_client.invoke(
+            FunctionName=PROCESSOR_FUNCTION_NAME,
+            InvocationType='Event',
+            Payload=body
         )
         
         # Acknowledge receipt to Telegram immediately in milliseconds

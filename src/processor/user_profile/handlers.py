@@ -15,6 +15,7 @@ def handle_profile_command(user_id, chat_id):
             ]
         ]
         send_message(chat_id, "You don't have a profile yet. Would you like to create one?", keyboard)
+        return
 
     details = (
         f"👤 *Your Profile*\n"

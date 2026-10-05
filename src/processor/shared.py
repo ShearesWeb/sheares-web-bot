@@ -2,12 +2,12 @@ import os
 import boto3
 import requests
 
-TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # Database Setup
-USER_TABLE_NAME    = "preprod-db-table-shearesbot-users"
-LAUNDRY_TABLE_NAME = "preprod-db-table-shearesbot-laundry-machines"
+USER_TABLE_NAME    = os.environ["USERS_TABLE_NAME"]
+LAUNDRY_TABLE_NAME = os.environ["LAUNDRY_TABLE_NAME"]
 
 dynamodb = boto3.resource('dynamodb')
 user_table    = dynamodb.Table(USER_TABLE_NAME)

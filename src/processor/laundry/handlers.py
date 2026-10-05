@@ -8,33 +8,30 @@ from boto3.dynamodb.conditions import Key
 from shared import user_table, laundry_table, user_profile_key, get_notification_chat, send_message, edit_message
 
 # Eventbridge
-sts_client = boto3.client('sts')
-identity = sts_client.get_caller_identity()
-account_id = identity['Account']
 scheduler = boto3.client('scheduler')
+NOTIFIER_FUNCTION_ARN = os.environ["NOTIFIER_FUNCTION_ARN"]
+SCHEDULER_ROLE_ARN    = os.environ["SCHEDULER_ROLE_ARN"]
+
+# Machines exist physically whether or not anyone has used them yet, so they
+# have no DynamoDB row until their first claim.
+MACHINE_IDS = [f"{typ}{i}" for typ in ('W', 'D') for i in range(1, 5)]
 
 ## Tracking Helpers
 def add_user_machine(user_id, machine_id):
     if not user_id or user_id == 'NONE': return
-    try:
-        user_table.update_item(
-            Key={'userID': f'USER#{user_id}', 'profile': 'LAUNDRY'},
-            UpdateExpression="ADD machines :m",
-            ExpressionAttributeValues={':m': set([machine_id])}
-        )
-    except Exception as e:
-        print(f"Error adding machine tracking: {e}")
+    user_table.update_item(
+        Key={'userID': f'USER#{user_id}', 'profile': 'LAUNDRY'},
+        UpdateExpression="ADD machines :m",
+        ExpressionAttributeValues={':m': set([machine_id])}
+    )
 
 def remove_user_machine(user_id, machine_id):
     if not user_id or user_id == 'NONE': return
-    try:
-        user_table.update_item(
-            Key={'userID': f'USER#{user_id}', 'profile': 'LAUNDRY'},
-            UpdateExpression="DELETE machines :m",
-            ExpressionAttributeValues={':m': set([machine_id])}
-        )
-    except Exception as e:
-        print(f"Error removing machine tracking: {e}")
+    user_table.update_item(
+        Key={'userID': f'USER#{user_id}', 'profile': 'LAUNDRY'},
+        UpdateExpression="DELETE machines :m",
+        ExpressionAttributeValues={':m': set([machine_id])}
+    )
 
 ## General Helpers
 def get_user_block(user_id):
@@ -87,19 +84,17 @@ def claim_machine_and_schedule(user_id, chat_id, block, machine_id, duration_min
         ]]
     }
     
-    try:
-        scheduler.create_schedule(
-            Name=f"Laundry_{block}_{machine_id}_{int(time.time())}",
-            ScheduleExpression=f"at({run_at})",
-            Target={
-                'Arn': f'arn:aws:lambda:ap-southeast-1:{account_id}:function:preprod-lambda-shearesbot-notifier',
-                'RoleArn': f'arn:aws:iam::{account_id}:role/EventBridgeGenericLambdaRole', 
-                'Input': json.dumps(target_payload)
-            },
-            FlexibleTimeWindow={'Mode': 'OFF'}
-        )
-    except Exception as e:
-        print(f"Failed to set scheduler: {e}")
+    scheduler.create_schedule(
+        Name=f"Laundry_{block}_{machine_id}_{int(time.time())}",
+        ScheduleExpression=f"at({run_at})",
+        Target={
+            'Arn': NOTIFIER_FUNCTION_ARN,
+            'RoleArn': SCHEDULER_ROLE_ARN,
+            'Input': json.dumps(target_payload)
+        },
+        FlexibleTimeWindow={'Mode': 'OFF'},
+        ActionAfterCompletion='DELETE'
+    )
 
 ## Command Handlers
 def handle_wash_command(user_id, chat_id):
@@ -146,7 +141,8 @@ def handle_laundry_command(user_id, chat_id):
         send_message(chat_id, "⚠️ Error retrieving laundry status.")
         return
 
-    machines.sort(key=lambda x: x['machineID'])
+    machines_by_id = {m['machineID']: m for m in machines}
+    machines = [machines_by_id.get(m_id, {'machineID': m_id}) for m_id in MACHINE_IDS]
 
     status_map = {
         'AVAILABLE': '🟢 Available',
@@ -179,9 +175,9 @@ def handle_laundry_command(user_id, chat_id):
             mins = ceil((end_time - current_time) / 60)
             display += f" (~{mins}mins left)"
         
-        if m.get('type') == 'WASHER':
+        if m_id.startswith('W'):
             washers.append(display)
-        elif m.get('type') == 'DRYER':
+        else:
             dryers.append(display)
 
     # Format the bottom summary text
@@ -292,6 +288,9 @@ def handle_laundry_callback(user_id, chat_id, message_id, data):
         if get_real_machine_status(target_machine) == 'AVAILABLE':
             # Get original owner
             orig_machine = get_machine(block, from_id)
+            if not orig_machine:
+                edit_message(chat_id, message_id, f"*{from_id}* has nothing recorded in it. Use /wash or /dry to start your cycle.")
+                return
             orig_user = orig_machine.get('currentUser', 'NONE')
             orig_chat = get_notification_chat(orig_machine) or 'NONE'
             
@@ -347,6 +346,9 @@ def handle_laundry_callback(user_id, chat_id, message_id, data):
         target_user = target_machine.get('currentUser', 'NONE') if target_machine else 'NONE'
         
         orig_machine = get_machine(block, from_id)
+        if not orig_machine:
+            edit_message(chat_id, message_id, f"*{from_id}* has nothing recorded in it. Use /wash or /dry to start your cycle.")
+            return
         orig_user = orig_machine.get('currentUser', 'NONE')
         orig_chat = get_notification_chat(orig_machine) or 'NONE'
         
