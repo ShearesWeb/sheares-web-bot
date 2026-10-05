@@ -1,0 +1,197 @@
+# .github/workflows/3-preprod-release.yml
+name: Pre-production Release
+
+# Triggers:
+#   1. A push to `main` (this includes PR merges).
+#      -> Create the next `vX.Y.Z-beta` tag (patch bump from the latest release
+#         tag), then deploy that commit to preprod.
+#   2. A `vX.Y.Z-beta` tag is pushed by hand.
+#      -> Deploy that tag. Use this to redeploy, or to cut a minor/major bump
+#         that the automatic patch bump won't produce.
+#
+# Either way, a successful preprod deploy ends by cutting `vX.Y.Z` from
+# `vX.Y.Z-beta`. That tag deploys nothing on its own; it marks the commit as
+# eligible for prd. Shipping it is a manual run of `4-prd-release.yml`.
+#
+# Tags pushed with the default GITHUB_TOKEN do not trigger workflows, so the
+# main-push path has to create the tag and deploy within this same run.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-beta' # e.g., v1.2.0-beta
+
+concurrency:
+  group: preprod-release
+  cancel-in-progress: false
+
+jobs:
+  create-beta-tag:
+    name: Create Pre-production Tag
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'branch'
+    permissions:
+      contents: write
+
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+
+    steps:
+      - name: 1. ⬇️ Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. 🔢 Compute Next Beta Tag
+        id: bump
+        run: |
+          # A beta tag without its release tag is a failed preprod deploy; bump
+          # past it anyway so every beta tag names exactly one commit.
+          latest="$(git tag -l 'v*' --sort=-v:refname | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+(-beta)?$' || true)"
+          core="${latest:-v0.0.0}"
+          core="${core#v}"
+          core="${core%-beta}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$core"
+          next="v${MAJOR}.${MINOR}.$((PATCH + 1))-beta"
+
+          echo "Previous tag: ${latest:-<none>}"
+          echo "Next tag:     $next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+      - name: 3. 🏷️ Create + Push Tag
+        env:
+          BETA_TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git tag "$BETA_TAG" "$GITHUB_SHA"
+          git push origin "$BETA_TAG"
+
+
+  infra-deploy-preprod:
+    name: Provision Infrastructure (Pre-production)
+    runs-on: ubuntu-latest
+    environment: preprod
+    needs: create-beta-tag
+    # `create-beta-tag` is skipped on the tag-push path, which would skip this
+    # job too. Gate on the trigger and its result directly instead.
+    if: |
+      !cancelled() &&
+      (github.ref_type == 'tag' || needs.create-beta-tag.result == 'success')
+
+    outputs:
+      ECR_REPOSITORY_URL: ${{ steps.deploy.outputs.ecr_repository_url }}
+      FUNCTION_NAMES: ${{ steps.deploy.outputs.function_names }}
+
+    steps:
+      - name: 1. ⬇️ Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: 2. 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: 3. ⚙️ Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.0"
+          terraform_wrapper: false
+
+      - name: 4. 🚀 Apply Terraform for Pre-production Infra
+        id: deploy
+        working-directory: infra
+        env:
+          TF_VAR_telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: |
+          terraform init -input=false
+          terraform workspace select -or-create preprod-app
+          terraform plan --var-file=config/preprod.tfvars -out=output.tfplan -input=false
+          terraform apply -input=false --auto-approve output.tfplan
+          echo "ECR_REPOSITORY_URL=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
+          echo "FUNCTION_NAMES=$(terraform output -raw function_names)" >> $GITHUB_OUTPUT
+
+
+  docker-deploy-preprod:
+    name: Build & Deploy Docker to Lambda (preprod)
+    runs-on: ubuntu-latest
+    environment: preprod
+    needs: infra-deploy-preprod
+    if: ${{ !cancelled() && needs.infra-deploy-preprod.result == 'success' }}
+
+    steps:
+      - name: 1. ⬇️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 2. 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: 3. 🐳 Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 4. 🏷️ Set Docker Image URI
+        run: echo "IMAGE_URI=${{ needs.infra-deploy-preprod.outputs.ECR_REPOSITORY_URL }}:preprod-${{ github.sha }}" >> $GITHUB_ENV
+
+      - name: 5. 🛠️ Build & Push Docker Image
+        run: |
+          # The ECR repository is IMMUTABLE, so redeploying a commit (e.g. a
+          # hand-pushed minor bump tag) must reuse the image instead of re-pushing it.
+          if docker manifest inspect "$IMAGE_URI" >/dev/null 2>&1; then
+            echo "::notice::$IMAGE_URI already exists, skipping build."
+            exit 0
+          fi
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+
+      - name: 6. 🔄 Update Lambda Functions with New Image
+        run: |
+          for fn in ${{ needs.infra-deploy-preprod.outputs.FUNCTION_NAMES }}; do
+            aws lambda update-function-code \
+              --function-name "$fn" \
+              --image-uri "$IMAGE_URI"
+          done
+
+
+  create-release-tag:
+    name: Create Production Tag
+    runs-on: ubuntu-latest
+    needs:
+      - create-beta-tag
+      - docker-deploy-preprod
+    if: ${{ !cancelled() && needs.docker-deploy-preprod.result == 'success' }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: 1. ⬇️ Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 2. 🏷️ Cut Production Tag
+        env:
+          # Main-push path: the create-beta-tag job made it. Tag-push path: it is the ref.
+          BETA_TAG: ${{ needs.create-beta-tag.outputs.tag || github.ref_name }}
+        run: |
+          PRD_TAG="${BETA_TAG%-beta}"
+
+          if existing="$(git rev-parse -q --verify "refs/tags/$PRD_TAG^{commit}")"; then
+            if [ "$existing" != "$GITHUB_SHA" ]; then
+              echo "::error::$PRD_TAG already exists on $existing, not on $GITHUB_SHA."
+              exit 1
+            fi
+            echo "::notice::$PRD_TAG already exists on this commit, nothing to cut."
+            exit 0
+          fi
+
+          git tag "$PRD_TAG" "$GITHUB_SHA"
+          git push origin "$PRD_TAG"
+          echo "::notice::Cut $PRD_TAG from $BETA_TAG. Ship it with the Production Release workflow."

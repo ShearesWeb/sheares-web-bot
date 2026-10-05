@@ -1,11 +1,23 @@
-# .github/workflows/prd-deployment.yml
+# .github/workflows/4-prd-release.yml
 name: Production Release
 
+# Trigger: workflow_dispatch only, run against the `vX.Y.Z` tag to ship. Pick it
+# in the "Use workflow from" dropdown, or `gh workflow run 4-prd-release.yml --ref vX.Y.Z`.
+#
+# `3-preprod-release.yml` cuts `vX.Y.Z` only after `vX.Y.Z-beta` has deployed to
+# preprod, so the tag means "this passed preprod", not "send this to prd".
+#
+# Do NOT add a `push: tags` trigger. Tag creation is automated, so the only thing
+# stopping every green preprod deploy from shipping itself to prd would be
+# GitHub declining to re-trigger on GITHUB_TOKEN tag pushes.
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+' # e.g., v1.2.0
+
+run-name: Deploy ${{ github.ref_name }} to prd
+
+concurrency:
+  group: prd-release
+  cancel-in-progress: false
 
 jobs:
   infra-deploy-prd:
@@ -18,31 +30,32 @@ jobs:
       FUNCTION_NAMES: ${{ steps.deploy.outputs.function_names }}
 
     steps:
-      - name: 🧪 Validate tag format
+      - name: 1. 🧪 Validate Dispatched Ref
         run: |
           if [[ ! "$GITHUB_REF" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "❌ Invalid tag format: $GITHUB_REF"
+            echo "::error::Dispatched on $GITHUB_REF. prd deploys run from a vX.Y.Z tag."
             exit 1
           fi
 
-      - name: ⬇️ Checkout Code
+      - name: 2. ⬇️ Checkout Code
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      - name: 🔐 Configure AWS Credentials
+      - name: 3. 🔐 Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: ⚙️ Setup Terraform CLI
+      - name: 4. ⚙️ Setup Terraform CLI
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.11.0"
+          terraform_wrapper: false
 
-      - name: 🚀 Apply Terraform for Production Infra
+      - name: 5. 🚀 Apply Terraform for Production Infra
         id: deploy
         working-directory: infra
         env:
@@ -55,20 +68,19 @@ jobs:
           echo "ECR_REPOSITORY_URL=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
           echo "FUNCTION_NAMES=$(terraform output -raw function_names)" >> $GITHUB_OUTPUT
 
- 
+
   docker-deploy-prd:
     name: Build & Deploy Docker to Lambda (prd)
     runs-on: ubuntu-latest
     environment: prd
     needs: infra-deploy-prd
-    if: success()
 
     steps:
       - name: 1. ⬇️ Checkout Code
         uses: actions/checkout@v4
 
       - name: 2. 🔐 Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -78,23 +90,24 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: 4. 🏷️ Set Docker Image Tag
-        id: vars
-        run: echo "TAG=prd-${{ github.sha }}" >> $GITHUB_ENV
+      - name: 4. 🏷️ Set Docker Image URI
+        run: echo "IMAGE_URI=${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:prd-${{ github.sha }}" >> $GITHUB_ENV
 
-      - name: 5. 🛠️ Build Docker Image
+      - name: 5. 🛠️ Build & Push Docker Image
         run: |
-          docker build -t ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG .
+          # The ECR repository is IMMUTABLE, so re-running a release must reuse
+          # the image it already pushed instead of re-pushing it.
+          if docker manifest inspect "$IMAGE_URI" >/dev/null 2>&1; then
+            echo "::notice::$IMAGE_URI already exists, skipping build."
+            exit 0
+          fi
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
 
-      - name: 6. 📤 Push Docker Image to ECR
-        run: |
-          docker push ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
-
-      - name: 7. 🔄 Update Lambda Functions with New Image
+      - name: 6. 🔄 Update Lambda Functions with New Image
         run: |
           for fn in ${{ needs.infra-deploy-prd.outputs.FUNCTION_NAMES }}; do
             aws lambda update-function-code \
               --function-name "$fn" \
-              --image-uri ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
+              --image-uri "$IMAGE_URI"
           done
-   
