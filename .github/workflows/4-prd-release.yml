@@ -28,6 +28,7 @@ jobs:
     outputs:
       ECR_REPOSITORY_URL: ${{ steps.deploy.outputs.ecr_repository_url }}
       FUNCTION_NAMES: ${{ steps.deploy.outputs.function_names }}
+      API_GATEWAY_INVOKE_URL: ${{ steps.deploy.outputs.api_gateway_invoke_url }}
 
     steps:
       - name: 1. 🧪 Validate Dispatched Ref
@@ -67,6 +68,7 @@ jobs:
           terraform apply -input=false --auto-approve output.tfplan
           echo "ECR_REPOSITORY_URL=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
           echo "FUNCTION_NAMES=$(terraform output -raw function_names)" >> $GITHUB_OUTPUT
+          echo "API_GATEWAY_INVOKE_URL=$(terraform output -raw api_gateway_invoke_url)" >> $GITHUB_OUTPUT
 
 
   docker-deploy-prd:
@@ -111,3 +113,12 @@ jobs:
               --function-name "$fn" \
               --image-uri "$IMAGE_URI"
           done
+
+      - name: 7. 🔗 Register Telegram Webhook
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # The receiver route is `ANY /{proxy+}`, which does not match the bare root.
+          WEBHOOK_URL: ${{ needs.infra-deploy-prd.outputs.API_GATEWAY_INVOKE_URL }}/webhook
+        run: |
+          curl -sS --fail-with-body "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+            --data-urlencode "url=$WEBHOOK_URL"
