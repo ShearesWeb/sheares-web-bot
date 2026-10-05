@@ -3,7 +3,7 @@ import logging
 from dotenv import load_dotenv
 from telegram import Update
 
-from telegram_app import build_application, get_bot_token
+from archive.telegram_app import build_application, get_bot_token
 
 def main() -> None:
     load_dotenv()

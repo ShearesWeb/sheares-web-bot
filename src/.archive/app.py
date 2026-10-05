@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from telegram import Update
 
-from telegram_app import build_application, get_bot_token
+from archive.telegram_app import build_application, get_bot_token
 
 LOG = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)

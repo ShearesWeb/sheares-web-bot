@@ -16,7 +16,7 @@ jobs:
 
     outputs:
       ECR_REPOSITORY_URL: ${{ steps.deploy.outputs.ecr_repository_url }}
-      FUNCTION_NAME: ${{ steps.deploy.outputs.function_name }}
+      FUNCTION_NAMES: ${{ steps.deploy.outputs.function_names }}
 
     steps:
       - name: 1. ⬇️ Checkout Code
@@ -47,7 +47,7 @@ jobs:
           terraform plan --var-file=config/prd.tfvars -out=output.tfplan -input=false
           terraform apply -input=false --auto-approve output.tfplan
           echo "ECR_REPOSITORY_URL=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
-          echo "FUNCTION_NAME=$(terraform output -raw function_name)" >> $GITHUB_OUTPUT
+          echo "FUNCTION_NAMES=$(terraform output -raw function_names)" >> $GITHUB_OUTPUT
 
 
   docker-deploy-prd:
@@ -84,11 +84,13 @@ jobs:
         run: |
           docker push ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
 
-      - name: 7. 🔄 Update Lambda Function with New Image
+      - name: 7. 🔄 Update Lambda Functions with New Image
         run: |
-          aws lambda update-function-code \
-            --function-name ${{ needs.infra-deploy-prd.outputs.FUNCTION_NAME }} \
-            --image-uri ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
+          for fn in ${{ needs.infra-deploy-prd.outputs.FUNCTION_NAMES }}; do
+            aws lambda update-function-code \
+              --function-name "$fn" \
+              --image-uri ${{ needs.infra-deploy-prd.outputs.ECR_REPOSITORY_URL }}:$TAG
+          done
 
 
   create-semantic-tag:
