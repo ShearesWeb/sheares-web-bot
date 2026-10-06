@@ -70,7 +70,7 @@ Callback handlers match on a `callback_data` prefix, and the longest matching pr
 ## Running Locally
 
 1.  Create your own bot with [@BotFather](https://t.me/BotFather) and copy its token. Do not use the preprod or prd bot: they have webhooks, and `make dev` refuses to poll a bot with a webhook.
-2.  `cp .env.example .env` and fill it in. The table names point at real DynamoDB tables, so whatever you do locally changes those tables. Your `AWS_PROFILE` needs read and write access to them.
+2.  `cp .env.example .env` and fill it in. The table names point at real DynamoDB tables, so whatever you do locally changes those tables. Your AWS credentials need read and write access to them; uncomment `AWS_PROFILE` only if you use a named profile.
 3.  `make install` once, then `make dev`. Message your bot in Telegram.
 
 Reminders run in-process while `make dev` is running, so stopping it drops pending ones. Run the tests with `make test`; they use moto and need no AWS access.
