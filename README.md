@@ -8,11 +8,13 @@ Sheares Bot is a serverless Telegram bot designed to streamline hall life and ma
 
 The bot is built entirely on AWS using an event-driven, serverless architecture. 
 
-*   **Ingestion:** A Shearite sends a message to the Telegram Bot, which forwards the request via webhook to an API Gateway.
-*   **Receiver:** The API Gateway triggers the `Receiver` Lambda function. To prevent timeouts and ensure quick webhook acknowledgement, this Lambda simply takes the incoming payload and invokes the `Processor` asynchronously.
-*   **Processing & Storage:** The `Processor` Lambda receives each update from the `Receiver` and executes the core business logic, maintaining state and user data by reading from and writing to DynamoDB. 
-*   **Scheduling:** When a user starts a time-delayed action (like a laundry cycle), the `Processor` creates a scheduled schedule in EventBridge. 
-*   **Notification:** Once the timer expires, EventBridge triggers the `Notifier` Lambda, which sends an alert directly back to the user through the Telegram Bot.
+*   **Ingestion:** A Shearite sends a message to the Telegram Bot, which forwards the update via webhook to an API Gateway.
+*   **Bot Lambda:** API Gateway invokes the single bot function. `src/app.py` sees a webhook event, routes the update to the matching handler, and returns 200 to Telegram once it has been handled. Failures are logged and still acknowledged so Telegram does not retry them forever.
+*   **Storage:** Handlers read and write user and machine state in DynamoDB.
+*   **Scheduling:** When a user starts a time-delayed action (like a laundry cycle), the bot creates a one-off EventBridge schedule.
+*   **Notification:** When the schedule fires, EventBridge invokes the same function with a job event (`{"job": "laundry_done", "payload": {...}}`), and the job handler messages the user.
+
+The diagram still shows the earlier three-function layout.
 
 ## Database Schema (DynamoDB)
 
@@ -30,10 +32,48 @@ Maintains the real-time state and ownership of all washing machines and dryers a
 
 ## Code Structure
 
-The repository is organized by Lambda function. All three functions ship in a single Docker image (see `Dockerfile`), and each Lambda picks its handler through `image_config` in `infra/lambda.tf`.
+```
+src/
+  app.py          Lambda entrypoint and local polling entrypoint; routing only
+  core/           config, router, Telegram client, schedulers, DynamoDB tables
+  features/
+    profile/      handlers.py, repository.py
+    laundry/      handlers.py, service.py, repository.py
+tests/            pytest suite (moto for AWS, a fake Telegram client)
+```
 
-*   **`src/<lambda_name>/lambda_function.py`**: The main entry point for each Lambda function (handler `<lambda_name>.lambda_function.lambda_handler`).
-*   **`src/requirements.txt`**: External Python dependencies (e.g., `requests`), installed into the image for all functions.
+Each feature splits into three layers. `handlers.py` owns everything Telegram-shaped: message text, keyboards, parsing `callback_data`. `service.py` holds the rules and never imports Telegram. `repository.py` is the only module that talks to DynamoDB. A feature without real rules (like `profile`) skips `service.py`.
+
+All code ships in one Docker image (see `Dockerfile`) run by one Lambda with handler `app.lambda_handler`.
+
+## Adding a Command
+
+Register handlers with the decorators in `core/router.py`. A command or button handler receives a `Context` with `user_id`, `chat_id`, `text`, `data`, `message_id`, `telegram` and `scheduler`.
+
+```python
+from core.router import router
+
+
+@router.command("/feedback")
+def feedback_command(ctx):
+    kb = [[{"text": "Hall events", "callback_data": "fb_events"}]]
+    ctx.telegram.send_message(ctx.chat_id, "What is your feedback about?", kb)
+
+
+@router.callback("fb_")
+def feedback_topic(ctx):
+    ctx.telegram.edit_message(ctx.chat_id, ctx.message_id, f"Thanks! Topic: {ctx.data[3:]}")
+```
+
+Callback handlers match on a `callback_data` prefix, and the longest matching prefix wins. Registering the same command or prefix twice fails at startup. For a new feature, create `src/features/<name>/` and add its `handlers` import to `src/features/__init__.py`. Scheduled work uses `@router.job("<name>")` with a `(payload, telegram)` handler and `ctx.scheduler.schedule(name, run_at, job, payload)`; EventBridge schedule names must start with `Laundry_` until the IAM policy is widened.
+
+## Running Locally
+
+1.  Create your own bot with [@BotFather](https://t.me/BotFather) and copy its token. Do not use the preprod or prd bot: they have webhooks, and `make dev` refuses to poll a bot with a webhook.
+2.  `cp .env.example .env` and fill it in. The table names point at real DynamoDB tables, so whatever you do locally changes those tables. Your `AWS_PROFILE` needs read and write access to them.
+3.  `make install` once, then `make dev`. Message your bot in Telegram.
+
+Reminders run in-process while `make dev` is running, so stopping it drops pending ones. Run the tests with `make test`; they use moto and need no AWS access.
 
 ## Current Commands
 
