@@ -12,6 +12,6 @@ module "lambda_integration" {
   source                    = "./modules/apigw_lambda_integration"
   api_gateway_id            = module.apigw.api.id
   api_gateway_execution_arn = module.apigw.api.execution_arn
-  function_name             = module.receiver_function.function.function_name
-  function_invoke_arn       = module.receiver_function.function.invoke_arn
+  function_name             = module.bot_function.function.function_name
+  function_invoke_arn       = module.bot_function.function.invoke_arn
 }

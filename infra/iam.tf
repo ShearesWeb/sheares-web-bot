@@ -5,7 +5,7 @@ locals {
 
 data "aws_caller_identity" "current" {}
 
-# Shared by the receiver, processor and notifier functions.
+# Execution role for the bot function.
 module "lambda_execution_role" {
   source = "./modules/iam_role"
   name   = local.lambda_execution_role_name
@@ -27,11 +27,6 @@ module "lambda_execution_role" {
           aws_dynamodb_table.users.arn,
           aws_dynamodb_table.laundry_machines.arn,
         ]
-      }
-      InvokeProcessor = {
-        effect    = "Allow"
-        actions   = ["lambda:InvokeFunction"]
-        resources = [module.processor_function.function.arn]
       }
       SchedulerPermissions = {
         effect  = "Allow"
