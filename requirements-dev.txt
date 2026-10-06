@@ -1,0 +1,5 @@
+-r src/requirements.txt
+# The Lambda runtime ships boto3, so it is only pinned for local runs and tests.
+boto3==1.43.108
+pytest==9.1.1
+moto[dynamodb,scheduler]==5.2.3

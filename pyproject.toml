@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+# Feature test folders reuse basenames like test_handlers.py.
+addopts = "--import-mode=importlib"

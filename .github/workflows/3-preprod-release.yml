@@ -164,7 +164,6 @@ jobs:
       - name: 7. 🔗 Register Telegram Webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          # The receiver route is `ANY /{proxy+}`, which does not match the bare root.
           WEBHOOK_URL: ${{ needs.infra-deploy-preprod.outputs.API_GATEWAY_INVOKE_URL }}/webhook
         run: |
           curl -sS --fail-with-body "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
