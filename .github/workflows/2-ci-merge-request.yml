@@ -21,3 +21,21 @@ jobs:
 
       - name: 3. 🔍 Smoke Test Docker Container
         run: timeout 10 docker run --rm lambda-docker || [[ $? -eq 124 ]]
+
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. ⬇️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 2. 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 3. 📦 Install Dependencies
+        run: make install PYTHON_BIN=python
+
+      - name: 4. 🧪 Run Tests
+        run: make test
