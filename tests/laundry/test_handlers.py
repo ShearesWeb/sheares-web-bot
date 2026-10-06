@@ -4,7 +4,9 @@ import features  # noqa: F401  (registers handlers)
 from core.router import router
 from features.laundry import repository as repo
 from features.laundry import service
-from support import callback_update, message_update, seed_machine, seed_profile
+from core.context import Services
+from core.telegram import TelegramError
+from support import FakeTelegram, RecordingScheduler, callback_update, message_update, seed_machine, seed_profile
 
 CANCEL_ROW = [{"text": "❌ Cancel", "callback_data": "cancel"}]
 
@@ -264,3 +266,34 @@ def test_laundry_status_reports_lookup_failure(monkeypatch, services):
     router.dispatch_update(message_update("/laundry"), services)
 
     assert services.telegram.sent[0]["text"] == "⚠️ Error retrieving laundry status."
+
+
+class BlockedOwnerTelegram(FakeTelegram):
+    """The other user has blocked the bot, so every new message to them fails."""
+
+    def send_message(self, chat_id, text, keyboard=None):
+        raise TelegramError("sendMessage failed with HTTP 403: Forbidden: bot was blocked by the user")
+
+
+def test_bump_confirms_even_when_owner_blocked_the_bot(caplog):
+    services = Services(telegram=BlockedOwnerTelegram(), scheduler=RecordingScheduler())
+    seed_profile(1, "A")
+    seed_machine("A", "W2", status="COMPLETED", currentUser="2", currentChatID="20", endTime=0)
+
+    router.dispatch_update(callback_update("bump_W2"), services)
+
+    assert services.telegram.edited[0]["text"] == "✅ Reminder sent to the user of *W2*."
+    assert "bot was blocked by the user" in caplog.text
+
+
+def test_move_confirms_even_when_owner_blocked_the_bot(caplog):
+    services = Services(telegram=BlockedOwnerTelegram(), scheduler=RecordingScheduler())
+    seed_profile(1, "A")
+    seed_machine("A", "W1", status="COMPLETED", currentUser="2", currentChatID="20", endTime=0)
+
+    router.dispatch_update(callback_update("moveto_W1_W3"), services)
+
+    assert services.telegram.edited[0]["text"] == (
+        "✅ Contents moved to W3. W1 is now empty. Use /wash or /dry to start your cycle."
+    )
+    assert "bot was blocked by the user" in caplog.text

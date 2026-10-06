@@ -2,6 +2,7 @@ import logging
 import time
 
 from core.router import router
+from core.telegram import TelegramError
 from features.laundry import repository as repo
 from features.laundry import service
 from features.laundry.service import MoveOutcome
@@ -31,6 +32,14 @@ def _require_block(ctx):
 
 def _edit(ctx, text, keyboard=None):
     ctx.telegram.edit_message(ctx.chat_id, ctx.message_id, text, keyboard)
+
+
+def _notify_other_user(ctx, chat_id, text):
+    # The other user may have blocked the bot; that must not stop the clicker getting their confirmation.
+    try:
+        ctx.telegram.send_message(chat_id, text)
+    except TelegramError:
+        logger.exception("Could not notify chat %s", chat_id)
 
 
 @router.command("/wash")
@@ -150,7 +159,7 @@ def bump(ctx):
     if owner_chat is None:
         _edit(ctx, f"⚠️ No registered user to remind for *{m_id}*.")
         return
-    ctx.telegram.send_message(owner_chat, f"🔔 Reminder to take your clothes from *{m_id}* as someone is trying to use it!")
+    _notify_other_user(ctx, owner_chat, f"🔔 Reminder to take your clothes from *{m_id}* as someone is trying to use it!")
     _edit(ctx, f"✅ Reminder sent to the user of *{m_id}*.")
 
 
@@ -185,7 +194,7 @@ def move_contents(ctx):
         _edit(ctx, f"⚠️ {to_id} is occupied. You can cancel, or override the target machine.", kb)
     else:
         if orig_chat:
-            ctx.telegram.send_message(orig_chat, f"🔔 Your clothes were moved from {from_id} to {to_id} by the next user.")
+            _notify_other_user(ctx, orig_chat, f"🔔 Your clothes were moved from {from_id} to {to_id} by the next user.")
         _edit(ctx, f"✅ Contents moved to {to_id}. {from_id} is now empty. Use /wash or /dry to start your cycle.")
 
 
