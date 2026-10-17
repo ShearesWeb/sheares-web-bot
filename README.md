@@ -1,6 +1,6 @@
 # Sheares Bot
 
-Sheares Bot is a serverless Telegram bot designed to streamline hall life and manage shared facilities for Sheares Hall residents.
+Sheares Bot gives residents a friendly Telegram interface for interacting within their block, automating the day-to-day routines they share, for instance laundry machines and sticker packs. Provisioned on AWS using Lambda, API Gateway, DynamoDB and EventBridge Scheduler, with Terraform.
 
 ## System Architecture
 
