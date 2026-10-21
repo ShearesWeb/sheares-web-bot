@@ -1,7 +1,7 @@
 import pytest
 
 from core.router import Router
-from support import callback_update, message_update
+from support import callback_update, document_update, message_update, photo_update
 
 
 @pytest.fixture
@@ -69,6 +69,7 @@ def test_callback_user_is_the_clicker_not_the_bot(router, services):
 
 @pytest.mark.parametrize("register", [
     lambda r: r.command("/x"),
+    lambda r: r.message("photo"),
     lambda r: r.callback("x_"),
     lambda r: r.job("x"),
 ])
@@ -110,3 +111,40 @@ def test_dispatch_job_passes_payload_and_telegram(router, services):
 def test_dispatch_unknown_job_raises(router, services):
     with pytest.raises(KeyError, match="nope"):
         router.dispatch_job("nope", {}, services.telegram)
+
+
+def test_photo_handler_gets_largest_photo_and_sender_context(router, services):
+    seen = []
+    router.message("photo")(seen.append)
+
+    router.dispatch_update(photo_update(user_id=7, chat_id=70), services)
+
+    (ctx,) = seen
+    assert (ctx.user_id, ctx.chat_id) == (7, 70)
+    assert ctx.attachment.file_id == "receipt"
+    assert ctx.attachment.mime_type == "image/jpeg"
+    assert ctx.attachment.file_size == 100
+
+
+def test_document_handler_keeps_mime_type_and_size(router, services):
+    seen = []
+    router.message("document")(seen.append)
+
+    router.dispatch_update(document_update(mime_type="application/pdf", file_size=200), services)
+
+    (ctx,) = seen
+    assert ctx.attachment.file_id == "receipt"
+    assert ctx.attachment.mime_type == "application/pdf"
+    assert ctx.attachment.file_size == 200
+
+
+def test_anonymous_photos_and_unhandled_media_are_ignored(router, services):
+    seen = []
+    router.message("photo")(seen.append)
+    update = photo_update()
+    update["message"]["sender_chat"] = {"id": -100}
+
+    router.dispatch_update(update, services)
+    router.dispatch_update(document_update(), services)
+
+    assert seen == []

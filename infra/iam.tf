@@ -28,11 +28,24 @@ module "lambda_execution_role" {
           aws_dynamodb_table.laundry_machines.arn,
         ]
       }
+      TextractPermissions = {
+        effect    = "Allow"
+        actions   = ["textract:AnalyzeExpense"]
+        resources = ["*"]
+      }
       SchedulerPermissions = {
         effect  = "Allow"
         actions = ["scheduler:CreateSchedule"]
         resources = [
           "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Laundry_*",
+          "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Split_*",
+        ]
+      }
+      BillReminderCancellation = {
+        effect  = "Allow"
+        actions = ["scheduler:DeleteSchedule"]
+        resources = [
+          "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Split_*",
         ]
       }
       # CreateSchedule hands the scheduler role to EventBridge, which needs PassRole.
