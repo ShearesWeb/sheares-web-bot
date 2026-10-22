@@ -10,6 +10,7 @@ Here are some basic commands to get you started:
 
 👤 *Account*
 • /profile - Set your block, level, and year
+• /link - Connect your Telegram account to Sheares Intranet
 
 🧺 *Laundry*
 • /laundry - Status of laundry machines in your block
