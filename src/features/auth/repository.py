@@ -48,3 +48,26 @@ def consume_link_request(token):
         return None
 
     return {"telegram_user_id": item["telegram_user_id"]}
+
+
+def get_link_request(token):
+    """Check whether a linking request is still valid.
+
+    Unlike consume_link_request, this does not delete it.
+    """
+    response = users_table().get_item(
+        Key=token_key(token),
+        ConsistentRead=True,
+    )
+
+    item = response.get("Item")
+
+    if item is None:
+        return None
+
+    if int(item["expires_at"]) <= int(time.time()):
+        return None
+
+    return {
+        "telegram_user_id": item["telegram_user_id"],
+    }

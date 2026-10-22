@@ -62,3 +62,20 @@ def test_existing_profile_is_not_overwritten():
     profile = profile_repo.get_profile(12345)
     assert profile["block"] == "A"
     assert profile["level"] == 5
+
+
+def test_get_link_request_without_consuming():
+    token = service.create_link_request(12345)
+
+    request = repository.get_link_request(token)
+
+    assert request["telegram_user_id"] == "12345"
+
+    # Reading the token should not consume it.
+    assert service.consume_link_request(token) is not None
+
+
+def test_get_link_request_rejects_invalid_token():
+    request = repository.get_link_request("invalid-token")
+
+    assert request is None
