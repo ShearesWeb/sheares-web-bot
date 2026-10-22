@@ -1,8 +1,7 @@
+import os
 from functools import cache
 
 import boto3
-
-from core.config import settings
 
 
 @cache
@@ -11,8 +10,8 @@ def _dynamodb():
 
 
 def users_table():
-    return _dynamodb().Table(settings().users_table_name)
+    return _dynamodb().Table(os.environ["USERS_TABLE_NAME"])
 
 
 def laundry_table():
-    return _dynamodb().Table(settings().laundry_table_name)
+    return _dynamodb().Table(os.environ["LAUNDRY_TABLE_NAME"])

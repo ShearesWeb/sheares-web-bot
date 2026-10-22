@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt -t ${LAMBDA_TASK_ROOT}
 
 # Copy application code. src/.archive is deliberately left out.
 COPY ./src/app.py ${LAMBDA_TASK_ROOT}/
+COPY ./src/auth_app.py ${LAMBDA_TASK_ROOT}/
 COPY ./src/core ${LAMBDA_TASK_ROOT}/core
 COPY ./src/features ${LAMBDA_TASK_ROOT}/features
 

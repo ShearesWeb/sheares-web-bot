@@ -1,4 +1,5 @@
 import base64
+import hmac
 import json
 import logging
 import os
@@ -33,6 +34,21 @@ def lambda_handler(event, context):
 
 
 def _handle_webhook(event):
+    # API Gateway normalises headers today, but treating names case-insensitively
+    # also keeps this correct for direct Lambda tests and future integrations.
+    headers = {
+        key.lower(): value
+        for key, value in (event.get("headers") or {}).items()
+    }
+    supplied_secret = headers.get("x-telegram-bot-api-secret-token", "")
+    expected_secret = settings().telegram_webhook_secret
+    if not supplied_secret or not hmac.compare_digest(
+        supplied_secret,
+        expected_secret,
+    ):
+        logger.warning("Rejected request with invalid Telegram webhook secret")
+        return {"statusCode": 401}
+
     body = event.get("body")
     if not body:
         return {"statusCode": 200}

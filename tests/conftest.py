@@ -13,6 +13,8 @@ TEST_ENV = {
     "AWS_SESSION_TOKEN": "testing",
     "AWS_DEFAULT_REGION": "ap-southeast-1",
     "TELEGRAM_BOT_TOKEN": "test-token",
+    "TELEGRAM_WEBHOOK_SECRET": "test-webhook-secret",
+    "INTRANET_BASE_URL": "https://intranet.example.test",
     "USERS_TABLE_NAME": "users",
     "LAUNDRY_TABLE_NAME": "laundry",
 }

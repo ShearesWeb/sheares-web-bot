@@ -1,3 +1,4 @@
+
 locals {
   users_table_name   = "${var.env}-db-table-${var.project_code}-users"
   laundry_table_name = "${var.env}-db-table-${var.project_code}-laundry-machines"
@@ -27,6 +28,12 @@ resource "aws_dynamodb_table" "users" {
   attribute {
     name = "profile"
     type = "S"
+  }
+
+  # Automatically clean up expired authentication tokens.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
   }
 }
 

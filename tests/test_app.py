@@ -20,7 +20,14 @@ def router(monkeypatch, services):
 def api_event(body, base64_encoded=False):
     if base64_encoded:
         body = base64.b64encode(body.encode()).decode()
-    return {"requestContext": {"http": {"method": "POST"}}, "body": body, "isBase64Encoded": base64_encoded}
+    return {
+        "requestContext": {"http": {"method": "POST"}},
+        "headers": {
+            "X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret",
+        },
+        "body": body,
+        "isBase64Encoded": base64_encoded,
+    }
 
 
 @pytest.mark.parametrize("base64_encoded", [False, True])
@@ -36,7 +43,25 @@ def test_webhook_dispatches_update(router, base64_encoded):
 
 @pytest.mark.parametrize("body", [None, ""])
 def test_webhook_with_empty_body_is_acknowledged(router, body):
-    assert app.lambda_handler({"requestContext": {}, "body": body}, None) == {"statusCode": 200}
+    assert app.lambda_handler(api_event(body), None) == {"statusCode": 200}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"X-Telegram-Bot-Api-Secret-Token": "wrong-secret"},
+    ],
+)
+def test_webhook_rejects_untrusted_callers(router, headers):
+    seen = []
+    router.command("/help")(lambda ctx: seen.append(ctx.chat_id))
+
+    event = api_event(json.dumps(message_update("/help")))
+    event["headers"] = headers
+
+    assert app.lambda_handler(event, None) == {"statusCode": 401}
+    assert seen == []
 
 
 def test_webhook_handler_failure_is_logged_and_acknowledged(router, caplog):

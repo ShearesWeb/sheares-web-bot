@@ -107,6 +107,7 @@ jobs:
         working-directory: infra
         env:
           TF_VAR_telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TF_VAR_telegram_webhook_secret: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
         run: |
           terraform init -input=false
           terraform workspace select -or-create preprod-app
@@ -164,10 +165,12 @@ jobs:
       - name: 7. 🔗 Register Telegram Webhook
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           WEBHOOK_URL: ${{ needs.infra-deploy-preprod.outputs.API_GATEWAY_INVOKE_URL }}/webhook
         run: |
           curl -sS --fail-with-body "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-            --data-urlencode "url=$WEBHOOK_URL"
+            --data-urlencode "url=$WEBHOOK_URL" \
+            --data-urlencode "secret_token=$TELEGRAM_WEBHOOK_SECRET"
 
 
   create-release-tag:

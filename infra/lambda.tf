@@ -23,10 +23,12 @@ module "bot_function" {
   memory_size = 512
 
   environment_variables = {
-    TELEGRAM_BOT_TOKEN  = var.telegram_bot_token
-    USERS_TABLE_NAME    = aws_dynamodb_table.users.name
-    LAUNDRY_TABLE_NAME  = aws_dynamodb_table.laundry_machines.name
-    SCHEDULER_ROLE_ARN  = module.scheduler_execution_role.role.arn
-    SCHEDULE_TARGET_ARN = local.bot_function_arn
+    TELEGRAM_BOT_TOKEN      = var.telegram_bot_token
+    TELEGRAM_WEBHOOK_SECRET = var.telegram_webhook_secret
+    INTRANET_BASE_URL       = var.intranet_base_url
+    USERS_TABLE_NAME        = aws_dynamodb_table.users.name
+    LAUNDRY_TABLE_NAME      = aws_dynamodb_table.laundry_machines.name
+    SCHEDULER_ROLE_ARN      = module.scheduler_execution_role.role.arn
+    SCHEDULE_TARGET_ARN     = local.bot_function_arn
   }
 }
