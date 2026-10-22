@@ -17,6 +17,13 @@ class Services:
 
 
 @dataclass(frozen=True)
+class Attachment:
+    file_id: str
+    mime_type: str
+    file_size: int | None = None
+
+
+@dataclass(frozen=True)
 class Context:
     """One Telegram update reduced to what handlers use. `data` is set for button clicks, `text` for messages."""
 
@@ -27,3 +34,11 @@ class Context:
     message_id: int | None
     telegram: TelegramClient
     scheduler: Scheduler
+    attachment: Attachment | None = None
+    update_id: int | None = None
+    chat_type: str = "private"
+    shared_users: tuple[dict, ...] = ()
+    shared_request_id: int | None = None
+    callback_id: str | None = None
+    chat_title: str = ""
+    shared_chat: dict | None = None

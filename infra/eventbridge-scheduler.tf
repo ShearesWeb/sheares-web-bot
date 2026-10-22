@@ -3,8 +3,8 @@ locals {
   schedule_execution_policy_name = "${var.env}-mgmt-iampolicy-${var.project_code}-scheduler"
 }
 
-# Role EventBridge Scheduler assumes to invoke the bot when a laundry
-# reminder fires. The schedules themselves are created at runtime by the bot.
+# Role EventBridge Scheduler assumes for laundry jobs and recurring bill
+# reminders. The schedules themselves are created at runtime by the bot.
 module "scheduler_execution_role" {
   source = "./modules/iam_role"
   name   = local.schedule_execution_role_name

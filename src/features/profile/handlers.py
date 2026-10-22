@@ -11,6 +11,11 @@ Here are some basic commands to get you started:
 👤 *Account*
 • /profile - Set your block, level, and year
 
+💸 *Bill Splitting*
+• /split - Build a bill from text expenses and receipt photos (private chat)
+• /bills - What you owe, what you're owed, and paid/received history (private chat)
+• /reminders - View and manage pending group reminders (private chat)
+
 🧺 *Laundry*
 • /laundry - Status of laundry machines in your block
 • /wash - Track your washing progress
@@ -21,9 +26,25 @@ _More features coming soon!_
 
 
 @router.command("/help")
-@router.command("/start")
 def help_command(ctx):
     ctx.telegram.send_message(ctx.chat_id, HELP_TEXT)
+
+
+@router.command("/start")
+def start_command(ctx):
+    args = ctx.text.split()[1:]
+    if ctx.chat_type == "private" and args == ["split"]:
+        # Import on use: feature modules register their handlers at startup.
+        from features.split.handlers import split_command
+        split_command(ctx)
+    elif ctx.chat_type == "private" and args == ["bills"]:
+        from features.split.payments import bills_command
+        bills_command(ctx)
+    elif ctx.chat_type == "private" and args in (["reminders"], ["reminder"]):
+        from features.split.reminders import reminder_command
+        reminder_command(ctx)
+    else:
+        help_command(ctx)
 
 
 @router.command("/profile")
