@@ -1,3 +1,4 @@
+
 locals {
   lambda_execution_role_name   = "${var.env}-mgmt-iamrole-${var.project_code}"
   lambda_execution_policy_name = "${var.env}-mgmt-iampolicy-${var.project_code}"
@@ -9,12 +10,17 @@ data "aws_caller_identity" "current" {}
 module "lambda_execution_role" {
   source = "./modules/iam_role"
   name   = local.lambda_execution_role_name
+
   policy_attachments = [
     "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
   ]
+
   custom_policy = {
     name = local.lambda_execution_policy_name
+
     statements = {
+
+      # Existing permissions for DynamoDB operations.
       DynamodbPermissions = {
         effect = "Allow"
         actions = [
@@ -28,6 +34,20 @@ module "lambda_execution_role" {
           aws_dynamodb_table.laundry_machines.arn,
         ]
       }
+
+      # NEW: Allow deletion of consumed authentication tokens.
+      # Restricted to the users table.
+      AuthTokenDeletion = {
+        effect = "Allow"
+        actions = [
+          "dynamodb:DeleteItem",
+        ]
+        resources = [
+          aws_dynamodb_table.users.arn,
+        ]
+      }
+
+      # Permissions to create laundry reminder schedules.
       SchedulerPermissions = {
         effect  = "Allow"
         actions = ["scheduler:CreateSchedule"]
@@ -35,7 +55,8 @@ module "lambda_execution_role" {
           "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Laundry_*",
         ]
       }
-      # CreateSchedule hands the scheduler role to EventBridge, which needs PassRole.
+
+      # Allow passing the scheduler execution role to EventBridge.
       PassSchedulerRole = {
         effect    = "Allow"
         actions   = ["iam:PassRole"]
