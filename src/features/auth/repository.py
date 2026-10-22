@@ -48,4 +48,3 @@ def consume_link_request(token):
         return None
 
     return {"telegram_user_id": item["telegram_user_id"]}
-
