@@ -1,4 +1,7 @@
 
+from urllib.parse import urlencode
+
+from core.config import settings
 from core.router import router
 from features.auth import service
 
@@ -16,12 +19,16 @@ def link_command(ctx):
         return
 
     # Create a temporary account-linking request.
-    service.create_link_request(ctx.user_id)
+    token = service.create_link_request(ctx.user_id)
+    link_url = (
+        f"{settings().intranet_base_url.rstrip('/')}/dashboard/link-telegram?"
+        f"{urlencode({'token': token})}"
+    )
 
     ctx.telegram.send_message(
         ctx.chat_id,
-        "🔗 Account-linking request created!\n\n"
-        "The Sheares Intranet verification page is "
-        "not connected yet.\n\n"
-        "This feature is currently in development.",
+        "🔗 Your secure Sheares Intranet linking request is ready.\n\n"
+        "Open the page below, sign in, review both accounts, and confirm. "
+        "This link expires in 10 minutes and works once.",
+        keyboard=[[{"text": "Continue securely", "url": link_url}]],
     )

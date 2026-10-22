@@ -21,3 +21,7 @@ def create_link_request(telegram_user_id):
 
 def consume_link_request(token):
     return repository.consume_link_request(token)
+
+
+def complete_link_request(token, resident_id):
+    return repository.complete_link_request(token, resident_id)

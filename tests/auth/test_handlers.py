@@ -22,6 +22,13 @@ def test_link_in_private_chat():
 
     create.assert_called_once_with(12345)
     ctx.telegram.send_message.assert_called_once()
+    message = ctx.telegram.send_message.call_args.args[1]
+    keyboard = ctx.telegram.send_message.call_args.kwargs["keyboard"]
+    assert "10 minutes" in message
+    assert keyboard == [[{
+        "text": "Continue securely",
+        "url": "https://intranet.example.test/dashboard/link-telegram?token=test-token",
+    }]]
 
 
 def test_link_in_group_chat():
