@@ -1,19 +1,34 @@
 import json
+import logging
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.router import router
+
+logger = logging.getLogger(__name__)
 
 
 class Scheduler(Protocol):
     def schedule(self, name: str, run_at: datetime, job: str, payload: dict) -> None: ...
+    def schedule_recurring(self, name: str, interval_seconds: int, job: str, payload: dict,
+                           *, start_at: datetime | None = None) -> None: ...
+    def cancel(self, name: str) -> None: ...
+
+
+def _recurring_start(interval_seconds, start_at):
+    if start_at is None:
+        return datetime.now(UTC) + timedelta(seconds=interval_seconds)
+    if start_at.tzinfo is None or start_at.utcoffset() is None:
+        raise ValueError("The first recurring run must include a timezone.")
+    return start_at.astimezone(UTC)
 
 
 class EventBridgeScheduler:
-    """Creates one-off schedules that invoke this Lambda with a job event."""
+    """Creates one-off and recurring schedules that invoke this Lambda."""
 
     def __init__(self, role_arn, target_arn):
         self._client = boto3.client("scheduler")
@@ -35,15 +50,90 @@ class EventBridgeScheduler:
             ActionAfterCompletion="DELETE",
         )
 
+    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at=None):
+        hours, remainder = divmod(interval_seconds, 3600)
+        if hours < 1 or remainder:
+            raise ValueError("Recurring schedules must use whole hours.")
+        first_run = _recurring_start(interval_seconds, start_at)
+        try:
+            self._client.create_schedule(
+                Name=name, ClientToken=name,
+                ScheduleExpression=f"rate({hours} {'hour' if hours == 1 else 'hours'})",
+                StartDate=first_run,
+                FlexibleTimeWindow={"Mode": "OFF"},
+                Target={"Arn": self._target_arn, "RoleArn": self._role_arn,
+                        "Input": json.dumps({"job": job, "payload": payload})},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConflictException":
+                raise
+
+    def cancel(self, name):
+        try:
+            self._client.delete_schedule(Name=name)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ResourceNotFoundException":
+                raise
+
 
 class InProcessScheduler:
     """Runs jobs in this process for local runs. A real schedule would fire the deployed Lambda and reply from its bot."""
 
     def __init__(self, telegram):
         self._telegram = telegram
+        self._recurring = {}
+        self._lock = threading.RLock()
 
     def schedule(self, name, run_at, job, payload):
         delay = max(0.0, (run_at - datetime.now(UTC)).total_seconds())
-        timer = threading.Timer(delay, router.dispatch_job, args=(job, payload, self._telegram))
+        timer = threading.Timer(delay, router.dispatch_job, args=(job, payload, self._telegram), kwargs={"scheduler": self})
         timer.daemon = True
         timer.start()
+
+    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at=None):
+        if interval_seconds <= 0:
+            raise ValueError("The reminder interval must be positive.")
+        first_run = _recurring_start(interval_seconds, start_at)
+        interval = timedelta(seconds=interval_seconds)
+        with self._lock:
+            if name in self._recurring:
+                return
+            stopped = threading.Event()
+            self._recurring[name] = (stopped, None)
+
+        def queue(run_at):
+            with self._lock:
+                if stopped.is_set():
+                    return
+                delay = max(0.0, (run_at - datetime.now(UTC)).total_seconds())
+                timer = threading.Timer(delay, fire, args=(run_at,))
+                timer.daemon = True
+                self._recurring[name] = (stopped, timer)
+                timer.start()
+
+        def fire(run_at):
+            if stopped.is_set():
+                return
+            try:
+                router.dispatch_job(job, payload, self._telegram, scheduler=self)
+            except Exception:
+                logger.exception("A local recurring job failed")
+            finally:
+                # Keep the original clock time even if a job runs slowly or
+                # the computer wakes after missing one or more occurrences.
+                next_run = run_at + interval
+                now = datetime.now(UTC)
+                if next_run <= now:
+                    next_run += interval * ((now - next_run) // interval + 1)
+                queue(next_run)
+
+        queue(first_run)
+
+    def cancel(self, name):
+        with self._lock:
+            existing = self._recurring.pop(name, None)
+            if existing:
+                stopped, timer = existing
+                stopped.set()
+                if timer:
+                    timer.cancel()

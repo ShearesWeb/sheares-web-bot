@@ -27,7 +27,8 @@ def lambda_handler(event, context):
     if "requestContext" in event:
         return _handle_webhook(event)
     if "job" in event:
-        router.dispatch_job(event["job"], event["payload"], _lambda_services().telegram)
+        services = _lambda_services()
+        router.dispatch_job(event["job"], event["payload"], services.telegram, scheduler=services.scheduler)
         return None
     raise ValueError(f"Unrecognised event with keys {sorted(event)}")
 

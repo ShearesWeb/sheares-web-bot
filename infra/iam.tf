@@ -34,7 +34,6 @@ module "lambda_execution_role" {
           aws_dynamodb_table.laundry_machines.arn,
         ]
       }
-
       # NEW: Allow deletion of consumed authentication tokens.
       # Restricted to the users table.
       AuthTokenDeletion = {
@@ -47,12 +46,26 @@ module "lambda_execution_role" {
         ]
       }
 
-      # Permissions to create laundry reminder schedules.
+      TextractPermissions = {
+        effect    = "Allow"
+        actions   = ["textract:AnalyzeExpense"]
+        resources = ["*"]
+      }
+
+      # Permissions to create laundry and bill reminder schedules.
       SchedulerPermissions = {
         effect  = "Allow"
         actions = ["scheduler:CreateSchedule"]
         resources = [
           "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Laundry_*",
+          "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Split_*",
+        ]
+      }
+      BillReminderCancellation = {
+        effect  = "Allow"
+        actions = ["scheduler:DeleteSchedule"]
+        resources = [
+          "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/Split_*",
         ]
       }
 
