@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import os
+import time
 from functools import cache
 
 import features  # noqa: F401  (importing registers every handler)
@@ -10,7 +11,7 @@ from core.config import settings
 from core.context import Services
 from core.router import router
 from core.scheduler import EventBridgeScheduler, InProcessScheduler
-from core.telegram import TelegramClient
+from core.telegram import TelegramClient, TelegramError
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,32 @@ def _handle_webhook(event):
     return {"statusCode": 200}
 
 
+def _poll_request(request, **kwargs):
+    """Retry polling reads after connection failures or temporary server errors."""
+    delay = 1
+    while True:
+        try:
+            result = request(**kwargs)
+        except TelegramError as exc:
+            if exc.code is not None and not 500 <= exc.code < 600:
+                raise
+            reason = "connection error" if exc.code is None else f"HTTP {exc.code}"
+            # Request exceptions can include the bot token; log only a safe summary.
+            logger.warning(
+                "Telegram %s failed (%s). Retrying in %s seconds.", request.__name__, reason, delay,
+            )
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+        else:
+            if delay > 1:
+                logger.info("Telegram connection restored.")
+            return result
+
+
 def poll():
     """Local entrypoint: long-polls Telegram so the bot runs without deploying."""
     telegram = TelegramClient(settings().telegram_bot_token)
-    webhook_url = telegram.get_webhook_info().get("url")
+    webhook_url = _poll_request(telegram.get_webhook_info).get("url")
     if webhook_url:
         raise SystemExit(
             f"This bot has a webhook set ({webhook_url}), so it belongs to a deployed environment. "
@@ -75,7 +98,8 @@ def poll():
     offset = None
     logger.info("Polling Telegram for updates")
     while True:
-        for update in telegram.get_updates(offset, timeout=30):
+        updates = _poll_request(telegram.get_updates, offset=offset, timeout=30)
+        for update in updates:
             offset = update["update_id"] + 1
             try:
                 router.dispatch_update(update, services)

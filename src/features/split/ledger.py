@@ -3,11 +3,11 @@
 import time
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
-from core.db import users_table
+from core.db import batch_users_items, users_table
 
 BILL_PREFIX = "SPLIT_BILL#"
 PAYABLE_PREFIX = "SPLIT_PAYABLE#"
@@ -33,7 +33,7 @@ def snapshot(session):
     return {
         **bill_key(session["ownerID"], session["sessionID"]),
         **{key: session[key] for key in ("sessionID", "ownerID", "chatID", "expenses", "participants", "totalCents", "splitMethod")},
-        "createdAt": session.get("createdAt", int(time.time())), "ledgerVersion": 1,
+        "createdAt": session.get("createdAt", int(time.time())),
         "allocation": session.get("allocation", {}),
         "shares": _shares(session), "payments": {},
     }
@@ -43,6 +43,7 @@ def _pointer_writes(bill):
     return [{"Put": {"TableName": users_table().name, "Item": {
         "userID": f"USER#{debtor_id}", "profile": PAYABLE_PREFIX + bill["sessionID"],
         "ownerID": str(bill["ownerID"]), "billID": bill["sessionID"],
+        "settled": False,
     }}} for debtor_id in _shares(bill)]
 
 
@@ -73,39 +74,26 @@ def transact(writes):
         raise
 
 
-def index_bill(bill):
-    """Backfill an older snapshot without replacing expenses or settled payments."""
-    if bill.get("ledgerVersion") == 1:
-        return bill
-    writes = [{"Update": {
-        "TableName": users_table().name, "Key": bill_key(bill["ownerID"], bill["sessionID"]),
-        "UpdateExpression": "SET #version = :version, #shares = :shares, #payments = if_not_exists(#payments, :empty)",
-        "ConditionExpression": "attribute_exists(userID)",
-        "ExpressionAttributeNames": {"#version": "ledgerVersion", "#shares": "shares", "#payments": "payments"},
-        "ExpressionAttributeValues": {":version": 1, ":shares": _shares(bill), ":empty": {}},
-    }}, *_pointer_writes(bill)]
-    transact(writes)
-    return get_bill(bill["ownerID"], bill["sessionID"])
-
-
 def save_bill(session):
     existing = get_bill(session["ownerID"], session["sessionID"])
     if existing:
-        return index_bill(existing)
+        return existing
     bill = snapshot(session)
     if transact(new_bill_writes(bill)):
         return bill
     existing = get_bill(session["ownerID"], session["sessionID"])
     if existing:
-        return index_bill(existing)
+        return existing
     raise RuntimeError("The bill could not be saved.")
 
 
-def _query(user_id, prefix):
+def _query(user_id, prefix, *, filter_expression=None):
     params = {
         "KeyConditionExpression": Key("userID").eq(f"USER#{user_id}") & Key("profile").begins_with(prefix),
         "ConsistentRead": True,
     }
+    if filter_expression is not None:
+        params["FilterExpression"] = filter_expression
     while True:
         page = users_table().query(**params)
         yield from page.get("Items", [])
@@ -116,9 +104,11 @@ def _query(user_id, prefix):
 
 def debts(user_id, direction, *, paid=False):
     if direction == "owed":
-        bills = (index_bill(bill) for bill in _query(user_id, BILL_PREFIX))
+        bills = _query(user_id, BILL_PREFIX)
     elif direction == "owe":
-        bills = (get_bill(pointer["ownerID"], pointer["billID"]) for pointer in _query(user_id, PAYABLE_PREFIX))
+        pointers = _query(user_id, PAYABLE_PREFIX, filter_expression=Attr("settled").eq(paid))
+        keys = {(pointer["ownerID"], pointer["billID"]) for pointer in pointers}
+        bills = batch_users_items([bill_key(owner_id, bill_id) for owner_id, bill_id in keys])
     else:
         raise ValueError("Unknown balance direction.")
     result = []
@@ -154,14 +144,14 @@ def find_payable(debtor_id, reference):
 
 
 def owned_bills(owner_id):
-    return [index_bill(bill) for bill in _query(owner_id, BILL_PREFIX)]
+    return list(_query(owner_id, BILL_PREFIX))
 
 
 def find_owned_bill(owner_id, reference):
     matches = list(_query(owner_id, BILL_PREFIX + reference))
     if len(matches) > 1:
         raise ValueError("More than one bill matches. Choose the bill through /bills and open its options.")
-    return index_bill(matches[0]) if matches else None
+    return matches[0] if matches else None
 
 
 def outstanding_shares(bill):
@@ -177,25 +167,25 @@ def mark_paid(owner_id, bill_id, debtor_id, actor_id):
     bill = get_bill(owner_id, bill_id)
     if not bill:
         return "not_found"
-    bill = index_bill(bill)
-    if not bill:
-        return "not_found"
     amount = bill.get("shares", {}).get(debtor_id)
     if amount is None:
         return "not_found"
-    try:
-        users_table().update_item(
-            Key=bill_key(owner_id, bill_id),
-            UpdateExpression="SET #payments.#person = :payment",
-            ConditionExpression="#shares.#person = :amount AND attribute_not_exists(#payments.#person)",
-            ExpressionAttributeNames={"#payments": "payments", "#shares": "shares", "#person": debtor_id},
-            ExpressionAttributeValues={
+    if bill.get("payments", {}).get(debtor_id):
+        return "already_paid"
+    saved = transact([
+        {"Update": {
+            "TableName": users_table().name, "Key": bill_key(owner_id, bill_id),
+            "UpdateExpression": "SET #payments.#person = :payment",
+            "ConditionExpression": "#shares.#person = :amount AND attribute_not_exists(#payments.#person)",
+            "ExpressionAttributeNames": {"#payments": "payments", "#shares": "shares", "#person": debtor_id},
+            "ExpressionAttributeValues": {
                 ":amount": amount,
                 ":payment": {"amountCents": int(amount), "paidAt": int(time.time()), "paidBy": actor_id},
             },
-        )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return "already_paid"
-        raise
-    return "paid"
+        }},
+        {"Put": {"TableName": users_table().name, "Item": {
+            "userID": f"USER#{debtor_id}", "profile": PAYABLE_PREFIX + bill_id,
+            "ownerID": owner_id, "billID": bill_id, "settled": True,
+        }}},
+    ])
+    return "paid" if saved else "already_paid"

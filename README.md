@@ -78,7 +78,7 @@ Callback handlers match on a `callback_data` prefix, and the longest matching pr
 2.  `cp .env.example .env` and fill it in. The table names point at real DynamoDB tables, so whatever you do locally changes those tables. Your AWS credentials need read and write access to them; uncomment `AWS_PROFILE` only if you use a named profile.
 3.  `make install` once, then `make dev`. Message your bot in Telegram.
 
-Reminders run in-process while `make dev` is running, so stopping it drops pending ones. Run the tests with `make test`; they use moto and need no AWS access.
+Reminders run in-process while `make dev` is running, so stopping it drops pending ones. Local polling retries connection failures and HTTP 5xx responses, including the startup webhook check, with delays of 1, 2, 4, 8, 16, then 30 seconds until Telegram responds. Successful requests reset the delay; retries preserve the update offset. Authentication errors and polling conflicts still stop the process rather than retrying indefinitely. Run the tests with `make test`; they use moto and need no AWS access.
 
 ## Current Commands
 
@@ -104,6 +104,8 @@ Create a `/profile` before using bill splitting, balances, or reminders, as with
 `/split` starts a bill in private chat. When used in a group, it shows an **Open split privately** button. Tap it and press **Start** if Telegram prompts; `/start split` opens the split prompt directly. The split session starts in private chat at that point. Send text expenses such as `KFC - 20` and `Burger King - 36`, one per line, and/or receipt photos or JPEG/PNG files up to 10 MB. Each addition shows the full bill so far: text expenses first, followed by all numbered receipts with their items and totals. The `/done` prompt and final payment message also include the complete list. Accepted receipt uploads immediately show "Processing image..." before downloading and extracting items. That status changes to "Receipt added." when saved, or "Receipt wasn't added." if the addition fails; any error explanation is sent separately. Wait for a receipt to be acknowledged before sending the next one. Send `/done` after entering all expenses, or `/cancel` to stop. The main menu lists `/split`, `/bills`, and `/reminders` for bill splitting; `/done`, `/method`, and `/cancel` are omitted from that menu. The split flow explains when to use `/done` and `/cancel`.
 
 After `/done`, choose **Equal**, **Exact amounts**, **Percentages**, or **By item**, then send all participant handles separated by spaces, commas, or new lines. Only those people are included; add your own handle if you want a share. Duplicate handles and IDs count once. Exact amounts and percentages show a numbered list of people: enter all allocation lines together in one message, using person numbers or their current `@handles`. Item splitting uses a checklist of buttons. `/done` repeats the current prompt or reopens the saved checklist; `/method` starts method and participant selection again before the bill is saved.
+
+Use `/delete` during an unfinished split in private chat to open a deletion checklist. Numbered buttons list each text expense separately and each whole receipt with its final total, with text first and receipts below. Tap entries to check or uncheck them, then press **Done** to delete all selected entries together and show the consolidated bill with its updated total. If no entries remain, the split session is cancelled instead, with the same "Bill cancelled. Send /split to start again." message as `/cancel`. Selections persist across Previous and Next pages, and the checklist shows the selected count and amount. Nothing is deleted until **Done** is pressed; **Cancel** discards the selections and preserves the expenses and draft allocations. Deleting a receipt removes all its items, taxes, and service charges. When expenses remain, confirmed deletion returns the draft to expense collection and clears any method, participant, and item allocation choices; send `/done` to choose them again. Saved bills cannot be changed through `/delete`. Old buttons cannot delete a different option after the list changes, repeated checkbox callbacks do not toggle the selection twice, and duplicate Done taps cannot delete twice. Deletion does not extend the 15-minute window or refund receipt upload allowance.
 
 ### Split methods
 
@@ -134,6 +136,12 @@ Receipt images are downloaded from Telegram and sent directly to [AWS Textract A
 
 Sessions live in the existing users table under `profile = SPLIT#<chat_id>`. A session starts with a 15-minute window, which resets only after successfully saving text expenses or receipt items. Failed or empty uploads, commands, participant selection, and allocation buttons do not extend the deadline. An addition cannot revive a session if it expires while the addition is being processed. Sending text or a receipt after an unfinished session expires prompts: "There's no active split session. Send /split to start again." Expiry is enforced when handling updates; there is no automatic timeout message. Completed snapshots are kept under `profile = SPLIT_BILL#<session_id>`. A fresh `/split` replaces the active session and preserves completed snapshots. Duplicate Telegram updates are ignored, concurrent inputs are protected by a processing lease, and failed extraction can be retried while the session remains active. Bills support up to 200 items, 50 additions, and 50 participants. A final payment summary is posted in the creator's current chat.
 
+### Receipt upload allowance
+
+Each Telegram user can submit **20 receipt images per Singapore calendar day**, resetting at midnight. The allowance is stored in a separate `SPLIT_OCR_QUOTA` user record and applies across split sessions. Starting another split or changing a handle does not reset it. Conditional writes prevent simultaneous uploads from exceeding the limit. Accepted JPEG/PNG uploads count before downloading, including failed downloads or OCR attempts; unsupported file types and oversized uploads are rejected first. After reaching the limit, users can still add text expenses. Photos and documents in groups are ignored, including replies to payment reminders. In private chats, uploads are ignored unless that user has an unfinished split session in the same chat; this check runs before prompting for a profile. An expired unfinished session still receives the restart prompt described above. Ignored uploads are not downloaded or counted toward the allowance.
+
+Receipt network timeouts are kept short: Telegram file metadata has a 3-second timeout, file download uses 2-second connect and 4-second read timeouts, and Textract uses 2-second connect and 8-second read timeouts without automatic retries. Lambda retains its 30-second timeout; API Gateway's integration timeout is unchanged.
+
 ### Balances and payments
 
 Use `/bills` in a private chat with the bot to see your balances and open these views. In a group, `/bills` shows an **Open bills privately** button. Tapping it opens the bot's private chat; after **Start**, `/start bills` displays the bills menu directly. The link shows the balances of the person who opens it. The private-chat buttons use the bot's current username from `getMe`; no username configuration is required. A normal `/start` still shows the main menu.
@@ -147,9 +155,11 @@ These views and payment actions are accessed through the `/bills` buttons. The s
 
 The bill creator is recorded as the person who paid upfront. Each selected participant owes the creator their allocated share; the creator's own share and zero-value shares create no debt. Different bills remain separate, including when two people owe each other money. Lists show five shares per page, and totals include all pages.
 
-Marking a share paid or received immediately clears it from both people's outstanding balances. This records a manually reported payment; it does not transfer money. The original bill, amount, payment time, and the person who cleared it are retained in history. Repeated clicks and redisplaying `/done` preserve the payment record. Only the participant or the bill creator can clear their share. Records use Telegram IDs, so handle changes do not change balances.
+Tapping **Mark paid** or **Mark received** first opens a confirmation screen. **Back** leaves the share unpaid and preserves reminders. Confirming clears the share from both people's outstanding balances and removes it from reminders. Either the participant or the bill creator can confirm; no second approval is required. This records a manually reported payment and does not transfer money. The original bill, amount, payment time, and the person who cleared it are retained in history. Repeated confirmations and redisplaying `/done` preserve the payment record. Records use Telegram IDs, so handle changes do not change balances.
 
 The creator's `SPLIT_BILL#<session_id>` record holds the canonical payment status. Each debtor has a `SPLIT_PAYABLE#<session_id>` pointer to that record. Completing a new bill saves the session, completed snapshot, and all participant pointers in one DynamoDB transaction. The normal flow uses the existing GetItem, PutItem, UpdateItem, and Query permissions.
+
+Payable pointers retain payment history and carry a `settled` flag, updated atomically with the canonical payment record. Outstanding views filter out settled pointers, then load matching bills with consistent `BatchGetItem` reads in batches of at most 100, retrying unprocessed keys with backoff. Apply the Terraform permission for `dynamodb:BatchGetItem` on the users table before deploying this change.
 
 ### Group payment reminders
 
@@ -166,39 +176,35 @@ For reminder setup in private chat, choose **Set up reminders**, then **Choose r
 
 The private confirmation says only "Group selected." with the reminder action buttons. Open `/reminders` to view the group, unpaid shares, and schedule details. The bot edits the acknowledgement to add the controls instead of sending another confirmation. Initial delivery failures still include an explanation and retry option.
 
+Every person with an unpaid share must be verifiable as a member of the chosen group. The bot checks membership during setup and before each reminder. If someone leaves or membership cannot be verified, no amounts are posted and reminders are paused; the creator receives a private notice. [Telegram's membership API](https://core.telegram.org/bots/api#getchatmember) only guarantees checks of other users when the bot is a group administrator, so grant that role if membership verification fails.
+
 Selecting a group enables reminders and **sends an initial reminder to the group immediately**, with no frequency picker. Subsequent reminders run **every two days at 12:00 pm Singapore time (Asia/Singapore)**, starting at noon two calendar days after setup; for example, Monday setup sends an immediate message, followed by Wednesday noon and Friday noon reminders. Each bill has one target group; **Change reminder group** replaces the previous schedule, sends an initial reminder to the newly chosen group, and restarts this timetable. The initial post has a separate delivery claim, so repeated delivery of the same setup or retry action does not send it again or consume the next noon reminder. If the initial post encounters a temporary failure, the recurring schedule remains enabled and the creator gets a **Retry initial reminder** button. If group posting is forbidden, reminders are paused until the group is configured again.
 
 Each reminder lists only unpaid shares, with the person to pay and the remaining amounts. Participants mark their shares paid through `/bills` → **What I owe** in private chat, or the creator marks them received through `/bills` → **Owed to me**. After the last outstanding share is marked paid, the bot disables and cancels the reminder. Every scheduled run also rereads the bill before posting, so paid people are excluded and fully paid bills produce no reminder. Payment status is the manually recorded status in the bot.
 
 Use **Stop reminder** in the bill options or setup confirmation to stop a bill's reminders manually. Starting another setup replaces any older pending setup for that creator; setup requests expire after 15 minutes. If the bot is removed or posting is forbidden, reminders are paused. Reopen the bill options and select **Set up reminders** to choose the group again.
 
-Reminder configuration is stored in the completed bill's `reminder` map. `SPLIT_REMINDER_SETUP` stores the creator's pending group selection. Existing enabled reminders with an older frequency are moved to the standard schedule when their old job next runs or when their group is chosen again; the first noon reminder is two calendar days after that update. Old frequency buttons cannot change the schedule. Schedule generations prevent old or replaced schedules from posting, and a conditional claim suppresses repeat deliveries for the same interval. Transient Telegram failures can be retried; an ambiguous network timeout can still result in a duplicate message because Telegram does not expose a send-message idempotency key.
+Reminder configuration is stored in the completed bill's `reminder` map. `SPLIT_REMINDER_SETUP` stores the creator's pending group selection. Schedule generations prevent old or replaced schedules from posting, and a conditional claim suppresses repeat deliveries for the same interval. Transient Telegram failures can be retried; an ambiguous network timeout can still result in a duplicate message because Telegram does not expose a send-message idempotency key.
+
+Reminders have a **4-week limit**: one immediate message and at most 14 scheduled noon messages, through day 28. Setup explains the limit and `/reminders` shows the end date. EventBridge receives an explicit `EndDate` and deletes the schedule after completion; local timers also stop at the end. The bot disables reminders after the final scheduled message and notifies the creator privately. Expired reminders are also checked on list views and job delivery, so overdue jobs cannot post. Expiry preserves unpaid balances in `/bills`. Choosing a group again starts a new reminder period.
 
 Apply the Terraform IAM updates before deploying reminders: `scheduler:CreateSchedule` must allow `Split_*` schedules, and `scheduler:DeleteSchedule` must allow that prefix. The existing scheduler execution role and `iam:PassRole` permission are reused. No new DynamoDB table or index is needed. Local runs use recurring timers in the current process and send from the local bot; stopping that process drops the timers. Re-enable reminders after restarting a local run. Deployed EventBridge schedules persist independently of the bot process.
 
-### Previously saved bills
+### Receipt development tool
 
-Newly completed bills appear in balances immediately. A creator opening `/bills` also indexes their older completed bills. To make every previously saved bill visible to participants without waiting for its creator to open `/bills`, run the one-time backfill with the same environment variables and AWS credentials as the bot. Export the values from `.env` into your shell first; the command reads environment variables directly. Migration credentials also need `dynamodb:Scan` on the users table, in addition to its normal read/write permissions.
+This first release uses the current bill and reminder schemas without upgrade paths. Recreate bills and reminders from earlier development drafts when testing the release.
 
-```powershell
-$env:PYTHONPATH = "src"
-.\.venv\Scripts\python.exe -m features.split.backfill
-.\.venv\Scripts\python.exe -m features.split.backfill --apply
-```
+Apply the updated Terraform IAM policy (`textract:AnalyzeExpense`) before deploying this feature. Local AWS credentials also need `textract:AnalyzeExpense`, plus the existing DynamoDB permissions for the Telegram flow. Textract uses the configured AWS region.
 
-The first command only counts older bills. The second saves their participant indexes and preserves existing payments; it can be rerun safely. Previously saved bills begin unpaid unless they already have a recorded payment. This migration does not send Telegram messages.
-
-Apply the updated Terraform IAM policy (`textract:AnalyzeExpense`) and Lambda timeout before deploying this feature. Local AWS credentials also need `textract:AnalyzeExpense`, plus the existing DynamoDB permissions for the Telegram flow. Textract uses the configured AWS region.
-
-To run the samples in `src/features/split/images/` through live Textract without Telegram or DynamoDB, configure AWS credentials and run from the project root in PowerShell:
+To analyze explicit local JPEG/PNG files through live Textract without Telegram or DynamoDB, configure AWS credentials and run the development tool from the project root in PowerShell:
 
 ```powershell
 $env:PYTHONPATH = "src"
 $env:AWS_DEFAULT_REGION = "ap-southeast-1"
-.\.venv\Scripts\python.exe -m features.split
+.\.venv\Scripts\python.exe scripts/scan_receipts.py path/to/receipt.jpg
 ```
 
-You can append specific image paths to analyze just those files. This command makes live Textract calls; the automated tests stub AWS responses and make no live calls. OCR may miss or misread items, so check the output against the receipt. [Textract does not support Chinese text detection](https://docs.aws.amazon.com/textract/latest/dg/limits-document.html); mixed receipts may lose Chinese item names even when their English descriptions can be read.
+The tool requires image paths and has no bundled sample-folder default. It makes live Textract calls outside the bot's per-user allowance; automated tests stub AWS responses and make no live calls. OCR may miss or misread items, so check the output against the receipt. [Textract does not support Chinese text detection](https://docs.aws.amazon.com/textract/latest/dg/limits-document.html); mixed receipts may lose Chinese item names even when their English descriptions can be read.
 
 ## Roadmap & Idea Functions
 

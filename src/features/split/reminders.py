@@ -5,7 +5,6 @@ from html import escape
 import logging
 import re
 import time
-from uuid import uuid4
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -19,12 +18,36 @@ logger = logging.getLogger(__name__)
 JOB = "split_bill_reminder"
 INTERVAL_DAYS = 2
 INTERVAL_SECONDS = INTERVAL_DAYS * 86400
+REMINDER_DAYS = 28
 # Singapore uses UTC+8 year-round. A fixed offset also works on Windows without
 # requiring a separately installed IANA timezone database.
 SINGAPORE = timezone(timedelta(hours=8), "Asia/Singapore")
 SCHEDULE_LABEL = "Every 2 days at 12:00 pm Singapore time"
 BILL_OPTIONS_HINT = "Use the buttons under your completed bill, or open /reminders to manage active reminders."
 PAGE_SIZE = 5
+
+
+class GroupMembershipError(ValueError):
+    pass
+
+
+def _validate_debtors(telegram, chat_id, bill):
+    for user_id in ledger.outstanding_shares(bill):
+        try:
+            member = telegram.get_chat_member(int(chat_id), int(user_id))
+        except TelegramError as exc:
+            if exc.code not in (400, 403):
+                raise
+            raise GroupMembershipError(
+                "I couldn't verify everyone in that group. Make me a group administrator "
+                "so I can check membership, then set up reminders again."
+            ) from exc
+        if (member.get("status") not in ("creator", "administrator", "member")
+                and not (member.get("status") == "restricted" and member.get("is_member"))):
+            raise GroupMembershipError(
+                "Everyone with an unpaid share must be a member of the reminder group. "
+                "Add them or choose another group, then set up reminders again."
+            )
 
 
 def _schedule_name(bill_id, generation):
@@ -35,42 +58,23 @@ def _standard_reminder(bill_id, generation, chat_id, title):
     first = (datetime.fromtimestamp(time.time(), SINGAPORE) + timedelta(days=INTERVAL_DAYS)).replace(
         hour=12, minute=0, second=0, microsecond=0,
     )
+    # Fourteen noon occurrences, ending on day 28. Allow AWS's final
+    # occurrence its full minute of scheduling precision.
+    end = first + timedelta(days=REMINDER_DAYS - INTERVAL_DAYS, minutes=1)
     return {
         "enabled": True, "generation": generation, "scheduleName": _schedule_name(bill_id, generation),
         "chatID": str(chat_id), "groupTitle": title,
         "intervalDays": INTERVAL_DAYS, "intervalSeconds": INTERVAL_SECONDS,
         "firstAt": int(first.timestamp()), "timeZone": "Asia/Singapore", "localTime": "12:00",
-        "scheduleVersion": 2,
+        "endsAt": int(end.timestamp()),
     }
-
-
-def _is_standard(reminder):
-    return (reminder.get("scheduleVersion") == 2 and reminder.get("intervalSeconds") == INTERVAL_SECONDS
-            and reminder.get("timeZone") == "Asia/Singapore" and reminder.get("localTime") == "12:00")
 
 
 def _schedule(scheduler, owner_id, bill_id, reminder):
     scheduler.schedule_recurring(reminder["scheduleName"], INTERVAL_SECONDS, JOB, {
         "ownerID": str(owner_id), "billID": bill_id, "generation": reminder["generation"],
-    }, start_at=datetime.fromtimestamp(int(reminder["firstAt"]), UTC))
-
-
-def _upgrade_schedule(bill, scheduler):
-    """Move existing enabled reminders to noon without posting on their old cadence."""
-    old = bill.get("reminder", {})
-    if not old.get("enabled") or _is_standard(old):
-        return bill
-    owner_id, bill_id = bill["ownerID"], bill["sessionID"]
-    reminder = _standard_reminder(bill_id, uuid4().hex, old["chatID"], old.get("groupTitle", "Selected group"))
-    _schedule(scheduler, owner_id, bill_id, reminder)
-    # If the write times out, leave the candidate schedule in place: the write
-    # may have committed. Jobs for an unused generation delete themselves.
-    updated = repo.replace_active(owner_id, bill_id, old["generation"], reminder)
-    if not updated:
-        _cancel_schedule(scheduler, reminder["scheduleName"])
-        return ledger.get_bill(owner_id, bill_id)
-    _cancel_schedule(scheduler, old.get("scheduleName"))
-    return updated
+    }, start_at=datetime.fromtimestamp(int(reminder["firstAt"]), UTC),
+        end_at=datetime.fromtimestamp(int(reminder["endsAt"]), UTC))
 
 
 def _cancel_schedule(scheduler, name):
@@ -80,6 +84,20 @@ def _cancel_schedule(scheduler, name):
         except (BotoCoreError, ClientError):
             # Disabled/generation checks still suppress posts if cleanup fails.
             logger.warning("Could not remove an inactive bill reminder schedule")
+
+
+def _expire(bill, telegram, scheduler):
+    reminder = bill["reminder"]
+    stopped = repo.disable(bill["ownerID"], bill["sessionID"], reminder["generation"], "expired")
+    _cancel_schedule(scheduler, reminder["scheduleName"])
+    if stopped:
+        try:
+            telegram.send_message(
+                int(bill["chatID"]), f"The 4-week reminder period for bill {bill['sessionID'][:8]} has ended. "
+                "Unpaid shares remain in /bills. You can set up reminders again if needed.", parse_mode=None,
+            )
+        except TelegramError:
+            logger.warning("Could not notify the creator that a reminder expired")
 
 
 def stop_if_paid(owner_id, bill_id, scheduler):
@@ -113,8 +131,7 @@ def _send(ctx, text, keyboard=None, *, edit=False):
 
 
 def _bill(owner_id, bill_id):
-    bill = ledger.get_bill(owner_id, bill_id)
-    return ledger.index_bill(bill) if bill else None
+    return ledger.get_bill(owner_id, bill_id)
 
 
 def _send_options(ctx, text, bill_id):
@@ -137,6 +154,9 @@ def _pending_reminders(ctx, page=0, *, edit=False):
     bills = []
     for bill in ledger.owned_bills(ctx.user_id):
         if not bill or not bill.get("reminder", {}).get("enabled"):
+            continue
+        if int(time.time()) >= int(bill["reminder"]["endsAt"]):
+            _expire(bill, ctx.telegram, ctx.scheduler)
             continue
         if ledger.outstanding_shares(bill):
             bills.append(bill)
@@ -182,6 +202,10 @@ def _view_reminder(ctx, bill_id, *, page=0, edit=False):
         _pending_link(ctx, "That reminder wasn't found among your bills.", page=page, edit=edit)
         return
     reminder = bill.get("reminder", {})
+    if reminder.get("enabled") and int(time.time()) >= int(reminder["endsAt"]):
+        _expire(bill, ctx.telegram, ctx.scheduler)
+        _pending_link(ctx, "This reminder's 4-week period has ended.", page=page, edit=edit)
+        return
     if not ledger.outstanding_shares(bill):
         stop_if_paid(ctx.user_id, bill_id, ctx.scheduler)
         _pending_link(ctx, "Everyone has marked their share paid. This reminder is no longer pending.", page=page, edit=edit)
@@ -192,9 +216,12 @@ def _view_reminder(ctx, bill_id, *, page=0, edit=False):
     first_at = int(reminder["firstAt"])
     interval = int(reminder["intervalSeconds"])
     next_at = first_at + max(0, (int(time.time()) - first_at) // interval + 1) * interval
+    next_at = min(next_at, int(reminder["endsAt"]) - 60)
     next_date = datetime.fromtimestamp(next_at, SINGAPORE).strftime("%d %b %Y at %I:%M %p")
+    end_date = datetime.fromtimestamp(int(reminder["endsAt"]), SINGAPORE).strftime("%d %b %Y at %I:%M %p")
     text = (f"Group: {escape((reminder.get('groupTitle') or 'Selected group')[:80])}\n"
-            f"{SCHEDULE_LABEL}.\nNext scheduled reminder: {next_date} Singapore time.\n\n"
+            f"{SCHEDULE_LABEL}.\nNext scheduled reminder: {next_date} Singapore time.\n"
+            f"Reminder period ends: {end_date} Singapore time.\n\n"
             + payment_message(bill, reminder=True))
     keyboard = _reminder_actions(bill_id)
     keyboard.append([{"text": "Back to all reminders", "callback_data": f"split_remind:list:{page}"}])
@@ -244,7 +271,8 @@ def _start(ctx, bill_id):
     if ctx.chat_type == "private":
         ctx.telegram.send_message(
             ctx.chat_id, f"Choose the group for bill {bill_id[:8]}. Add this bot to that group first.\n\n"
-            "I'll send an initial reminder as soon as you choose the group, then remind every two days at 12:00 pm Singapore time.",
+            "I'll send an initial reminder as soon as you choose the group, then remind every two days at 12:00 pm Singapore time. "
+            "Reminders stop after 4 weeks, even if some shares remain unpaid.",
             parse_mode=None, reply_markup={"keyboard": [[{"text": "Choose reminder group", "request_chat": {
                 "request_id": int(setup["requestID"]), "chat_is_channel": False,
                 "bot_is_member": True, "request_title": True,
@@ -282,7 +310,7 @@ def _stop(ctx, bill_id):
         return
     repo.cancel_setup(ctx.user_id, bill_id)
     reminder = bill.get("reminder", {})
-    if reminder:
+    if reminder.get("enabled"):
         if not repo.disable(ctx.user_id, bill_id, reminder["generation"], "manual"):
             _send_options(ctx, "Reminder settings changed. Open this bill's options to stop the current schedule.", bill_id)
             return
@@ -308,6 +336,7 @@ def _enable(ctx, token, *, confirmation_message_id=None):
             repo.cancel_setup(ctx.user_id, setup["billID"])
             _send(ctx, "There are no unpaid shares left. Reminders weren't enabled.")
             return
+        _validate_debtors(ctx.telegram, chat["id"], bill)
         reminder = _standard_reminder(setup["billID"], setup["generation"], chat["id"], chat.get("title", "Selected group"))
         _schedule(ctx.scheduler, ctx.user_id, setup["billID"], reminder)
         if not repo.activate(ctx.user_id, setup, bill, reminder):
@@ -315,6 +344,11 @@ def _enable(ctx, token, *, confirmation_message_id=None):
             repo.release_setup(ctx.user_id, setup)
             _send_options(ctx, "The bill or setup changed. Open its options to check the current settings.", setup["billID"])
             return
+    except GroupMembershipError as exc:
+        _cancel_schedule(ctx.scheduler, name)
+        repo.release_setup(ctx.user_id, setup)
+        _send_options(ctx, escape(str(exc)), setup["billID"])
+        return
     except (TelegramError, ValueError):
         _cancel_schedule(ctx.scheduler, name)
         repo.release_setup(ctx.user_id, setup)
@@ -387,6 +421,8 @@ def _initial_result(ctx, bill_id, result):
         "paid": "Everyone has marked their share paid. Reminders are off.",
         "inactive": "The reminder settings changed or reminders were stopped. Open the bill options to check them.",
         "posting_failed": "I couldn't post to that group. Reminders are paused. Check my permissions, then choose the group again.",
+        "expired": "This reminder's 4-week period has ended. Unpaid shares remain in /bills.",
+        "membership_failed": "Not everyone with an unpaid share could be verified in the group. Reminders are paused. Check group membership and my administrator permissions, then set up reminders again.",
         "skipped": "The initial reminder was already handled or the reminder settings changed. No additional message was sent.",
     }
     _send_options(ctx, notices[result], bill_id)
@@ -398,6 +434,10 @@ def _retry_initial(ctx, bill_id):
         _send(ctx, "Only the bill creator can send its reminders. " + BILL_OPTIONS_HINT)
         return
     reminder = bill.get("reminder", {})
+    if reminder.get("enabled") and int(time.time()) >= int(reminder["endsAt"]):
+        _expire(bill, ctx.telegram, ctx.scheduler)
+        _initial_result(ctx, bill_id, "expired")
+        return
     if not reminder.get("enabled"):
         _initial_result(ctx, bill_id, "inactive")
         return
@@ -473,11 +513,11 @@ def reminder_job(payload, telegram, scheduler):
     if not reminder.get("enabled") or reminder.get("generation") != generation:
         _cancel_schedule(scheduler, name)
         return
+    if int(time.time()) >= int(reminder["endsAt"]):
+        _expire(bill, telegram, scheduler)
+        return
     if not ledger.outstanding_shares(bill):
         stop_if_paid(owner_id, bill_id, scheduler)
-        return
-    if not _is_standard(reminder):
-        _upgrade_schedule(bill, scheduler)
         return
     now = int(time.time())
     if now < int(reminder["firstAt"]):
@@ -496,9 +536,27 @@ def _deliver_reminder(owner_id, bill_id, generation, slot, telegram, scheduler):
         if not current.get("enabled") or current.get("generation") != generation:
             _cancel_schedule(scheduler, name)
             return "inactive"
+        if int(time.time()) >= int(current["endsAt"]):
+            _expire(bill, telegram, scheduler)
+            return "expired"
         if not ledger.outstanding_shares(bill):
             stop_if_paid(owner_id, bill_id, scheduler)
             return "paid"
+        try:
+            _validate_debtors(telegram, current["chatID"], bill)
+        except GroupMembershipError:
+            stopped = repo.disable(owner_id, bill_id, generation, "membership_changed")
+            _cancel_schedule(scheduler, name)
+            if stopped and slot >= 0:
+                try:
+                    telegram.send_message(
+                        int(bill["chatID"]), f"Reminders for bill {bill_id[:8]} are paused. I couldn't verify that everyone "
+                        "with an unpaid share is still in the group. Check group membership and my "
+                        "administrator permissions, then set up reminders again.", parse_mode=None,
+                    )
+                except TelegramError:
+                    logger.warning("Could not notify the creator that group membership checks failed")
+            return "membership_failed"
         telegram.send_message(int(current["chatID"]), payment_message(bill, reminder=True), parse_mode="HTML")
     except TelegramError as exc:
         if exc.code in (400, 403):
@@ -511,4 +569,7 @@ def _deliver_reminder(owner_id, bill_id, generation, slot, telegram, scheduler):
         repo.release_delivery(owner_id, bill_id, generation, slot)
         raise
     repo.sent(owner_id, bill_id, generation, slot)
+    last_slot = (int(current["endsAt"]) - int(current["firstAt"])) // INTERVAL_SECONDS
+    if slot >= last_slot:
+        _expire(bill, telegram, scheduler)
     return "sent"

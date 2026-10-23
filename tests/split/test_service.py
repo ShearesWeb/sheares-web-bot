@@ -3,6 +3,16 @@ import pytest
 from features.split import service
 
 
+def test_textract_timeouts_fit_the_receipt_webhook_budget():
+    service._textract.cache_clear()
+    try:
+        config = service._textract().meta.config
+        assert config.connect_timeout == 2 and config.read_timeout == 8
+        assert config.retries["total_max_attempts"] == 1
+    finally:
+        service._textract.cache_clear()
+
+
 def test_analyze_expense_uses_image_bytes_and_preserves_line_total(textract, receipt_image, expense_response):
     textract.add_response("analyze_expense", expense_response, {"Document": {"Bytes": receipt_image}})
 

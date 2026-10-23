@@ -9,7 +9,7 @@ from core import identities
 from core.router import router
 from core.telegram import FileTooLargeError, TelegramError
 from features.profile.access import require_profile, requires_profile
-from features.split import allocation, bill_actions, billing, checklist, navigation, repository, service
+from features.split import allocation, bill_actions, billing, checklist, deletion, navigation, quota, repository, service
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ def split_command(ctx):
         "Send expenses as text, one per line:\nFong Seng - 36.21\nAl Amaan - 74.82\n\n"
         "You can also upload a photo of your receipt or a JPEG/PNG file (up to 10 MB). "
         "Wait for each receipt to be added before sending the next one, then send /done.\n\n"
-        "Send /cancel to stop. The session closes after 15 minutes without adding text expenses or receipts.",
+        "Send /delete to remove an expense or receipt, or /cancel to stop. "
+        "The session closes after 15 minutes without adding text expenses or receipts.",
         parse_mode=None, reply_markup={"remove_keyboard": True},
     )
 
@@ -49,9 +50,10 @@ def _save_expenses(ctx, claim, event_id, expenses):
 
 
 def _send_consolidated(ctx, session):
-    lines = [*billing.expense_summary_lines(session["expenses"], html=True), "", "Send more expenses or /done."]
+    lines = [*billing.expense_summary_lines(session["expenses"], html=True), "",
+             "Send more expenses, /delete to remove an expense or receipt, or /done."]
     for message in _chunk_lines(lines):
-        ctx.telegram.send_message(ctx.chat_id, message, parse_mode="HTML")
+        ctx.telegram.send_message(ctx.chat_id, message, parse_mode="HTML", reply_markup={"remove_keyboard": True})
 
 
 @router.message("text")
@@ -87,7 +89,7 @@ def split_text(ctx):
         return
     if not repository.can_collect(session):
         if session["status"] == "PROCESSING" and session.get("processingEvent") != _event_id(ctx):
-            ctx.telegram.send_message(ctx.chat_id, "I'm still reading the previous receipt. Please send this expense again in a moment.")
+            ctx.telegram.send_message(ctx.chat_id, "I'm still reading the previous receipt. Please send this expense again in a moment.", parse_mode=None)
         return
     try:
         expenses = billing.parse_expenses(ctx.text)
@@ -101,7 +103,7 @@ def split_text(ctx):
         if not current:
             _prompt_restart(ctx)
         elif current["status"] == "PROCESSING" and current.get("processingEvent") != event_id:
-            ctx.telegram.send_message(ctx.chat_id, "I'm still saving the previous addition. Please send this expense again in a moment.")
+            ctx.telegram.send_message(ctx.chat_id, "I'm still saving the previous addition. Please send this expense again in a moment.", parse_mode=None)
         return
     saved = None
     try:
@@ -121,19 +123,19 @@ def split_text(ctx):
 def done_command(ctx):
     session = repository.get_session(ctx.user_id, ctx.chat_id)
     if not session or session["status"] == "CANCELLED":
-        ctx.telegram.send_message(ctx.chat_id, "Send /split to start a bill first.")
+        ctx.telegram.send_message(ctx.chat_id, "Send /split to start a bill first.", parse_mode=None)
     elif session["status"] == "COMPLETED":
         repository.save_bill(session)
         _send_bill(ctx, session)
     elif session["status"] == "PROCESSING":
         if repository.can_collect(session):
             if repository.recover_input(ctx.user_id, ctx.chat_id, session["sessionID"]):
-                ctx.telegram.send_message(ctx.chat_id, "The previous addition didn't finish. Please resend it, or send /done again to split the saved expenses.")
+                ctx.telegram.send_message(ctx.chat_id, "The previous addition didn't finish. Please resend it, or send /done again to split the saved expenses.", parse_mode=None)
         else:
-            ctx.telegram.send_message(ctx.chat_id, "I'm still reading a receipt. Send /done again in a moment.")
+            ctx.telegram.send_message(ctx.chat_id, "I'm still reading a receipt. Send /done again in a moment.", parse_mode=None)
     elif session["status"] == "COLLECTING":
         if not session["expenses"]:
-            ctx.telegram.send_message(ctx.chat_id, "Add at least one expense or receipt before /done.")
+            ctx.telegram.send_message(ctx.chat_id, "Add at least one expense or receipt before /done.", parse_mode=None)
             return
         session = repository.begin_method(ctx.user_id, ctx.chat_id, session["sessionID"])
         if session:
@@ -157,19 +159,19 @@ def done_command(ctx):
 def method_command(ctx):
     session = repository.get_session(ctx.user_id, ctx.chat_id)
     if not session or session["status"] == "CANCELLED":
-        ctx.telegram.send_message(ctx.chat_id, "Send /split and add expenses first.")
+        ctx.telegram.send_message(ctx.chat_id, "Send /split and add expenses first.", parse_mode=None)
     elif session["status"] == "COMPLETED":
-        ctx.telegram.send_message(ctx.chat_id, "This bill is already saved. Send /split to create another bill.")
+        ctx.telegram.send_message(ctx.chat_id, "This bill is already saved. Send /split to create another bill.", parse_mode=None)
     elif session["status"] == "PROCESSING":
-        ctx.telegram.send_message(ctx.chat_id, "Wait for the current addition to finish, then send /done.")
+        ctx.telegram.send_message(ctx.chat_id, "Wait for the current addition to finish, then send /done.", parse_mode=None)
     elif not session["expenses"]:
-        ctx.telegram.send_message(ctx.chat_id, "Add at least one expense or receipt before choosing a split method.")
+        ctx.telegram.send_message(ctx.chat_id, "Add at least one expense or receipt before choosing a split method.", parse_mode=None)
     else:
         session = repository.begin_method(ctx.user_id, ctx.chat_id, session["sessionID"])
         if session:
             ctx.telegram.send_message(
                 ctx.chat_id, "Choose a new method below, then select the people again.",
-                reply_markup={"remove_keyboard": True},
+                reply_markup={"remove_keyboard": True}, parse_mode=None,
             )
             _ask_method(ctx, session)
 
@@ -213,7 +215,35 @@ def _choose_method(ctx, session, method):
 @requires_profile
 def cancel_command(ctx):
     if repository.cancel_session(ctx.user_id, ctx.chat_id):
-        ctx.telegram.send_message(ctx.chat_id, "Bill cancelled. Send /split to start again.", reply_markup={"remove_keyboard": True})
+        _send_cancelled(ctx)
+
+
+def _send_cancelled(ctx):
+    ctx.telegram.send_message(ctx.chat_id, "Bill cancelled. Send /split to start again.", reply_markup={"remove_keyboard": True}, parse_mode=None)
+
+
+@router.command("/delete")
+def delete_command(ctx):
+    if ctx.chat_type == "private" and require_profile(ctx):
+        deletion.show(ctx)
+
+
+@router.callback("split_delete:")
+def delete_callback(ctx):
+    if ctx.chat_type != "private":
+        if ctx.callback_id:
+            ctx.telegram.answer_callback_query(ctx.callback_id)
+        return
+    if not require_profile(ctx):
+        if ctx.callback_id:
+            ctx.telegram.answer_callback_query(ctx.callback_id)
+        return
+    saved = deletion.handle_callback(ctx)
+    if saved:
+        if saved["status"] == "CANCELLED":
+            _send_cancelled(ctx)
+        else:
+            _send_consolidated(ctx, saved)
 
 
 def _people_keyboard(ctx, session):
@@ -360,55 +390,65 @@ def _send_bill(ctx, bill):
 
 @router.message("photo")
 @router.message("document")
-@requires_profile
 def receipt_uploaded(ctx):
-    if not ctx.attachment:
+    if ctx.chat_type != "private" or not ctx.attachment:
+        return
+    session = repository.get_session(ctx.user_id, ctx.chat_id, include_expired=True)
+    if not session or session["status"] in ("COMPLETED", "CANCELLED"):
+        return
+    if not require_profile(ctx):
+        return
+    if repository.is_expired(session):
+        _prompt_restart(ctx)
         return
     event_id = _event_id(ctx)
     claim = repository.claim_input(ctx.user_id, ctx.chat_id, event_id)
     if claim is None:
-        session = repository.get_session(ctx.user_id, ctx.chat_id)
-        if not session:
+        session = repository.get_session(ctx.user_id, ctx.chat_id, include_expired=True)
+        if not session or session["status"] in ("COMPLETED", "CANCELLED"):
+            return
+        if repository.is_expired(session):
             _prompt_restart(ctx)
         elif session["status"] == "PROCESSING" and session.get("processingEvent") != event_id:
-            ctx.telegram.send_message(ctx.chat_id, "I'm still reading the previous receipt. Please resend this picture after it finishes.")
+            ctx.telegram.send_message(ctx.chat_id, "I'm still reading the previous receipt. Please resend this picture after it finishes.", parse_mode=None)
         elif session["status"] in ("AWAITING_METHOD", "AWAITING_PARTICIPANTS", "AWAITING_ALLOCATION"):
-            ctx.telegram.send_message(ctx.chat_id, "Expenses are complete. Send /done to continue splitting, or /split to start a new bill.")
+            ctx.telegram.send_message(ctx.chat_id, "Expenses are complete. Send /done to continue splitting, or /split to start a new bill.", parse_mode=None)
         return
     saved = None
     status_message_id = None
     try:
         if ctx.attachment.mime_type not in ("image/jpeg", "image/png"):
-            ctx.telegram.send_message(ctx.chat_id, "Please upload a JPEG or PNG image of your receipt.")
+            ctx.telegram.send_message(ctx.chat_id, "Please upload a JPEG or PNG image of your receipt.", parse_mode=None)
             return
         if (ctx.attachment.file_size or 0) > service.MAX_RECEIPT_BYTES:
             raise FileTooLargeError()
+        quota.reserve_scan(ctx.user_id)
         status = ctx.telegram.send_message(ctx.chat_id, "Processing image...", parse_mode=None)
         status_message_id = status.get("message_id") if status else None
         image_bytes = ctx.telegram.download_file(ctx.attachment.file_id, max_bytes=service.MAX_RECEIPT_BYTES)
         receipts = service.analyze_receipt(image_bytes)
         if not any(receipt.items for receipt in receipts):
             ctx.telegram.send_message(
-                ctx.chat_id, "I couldn't find receipt items. Please upload a clearer photo showing the whole receipt.",
+                ctx.chat_id, "I couldn't find receipt items. Please upload a clearer photo showing the whole receipt.", parse_mode=None,
             )
             return
         expenses = billing.receipt_expenses(receipts)
         billing.validate_capacity(claim["expenses"], expenses)
         saved = _save_expenses(ctx, claim, event_id, expenses)
     except FileTooLargeError:
-        ctx.telegram.send_message(ctx.chat_id, "Please upload a receipt image smaller than 10 MB.")
+        ctx.telegram.send_message(ctx.chat_id, "Please upload a receipt image smaller than 10 MB.", parse_mode=None)
     except ValueError as exc:
-        ctx.telegram.send_message(ctx.chat_id, str(exc))
+        ctx.telegram.send_message(ctx.chat_id, str(exc), parse_mode=None)
     except ClientError as exc:
         logger.exception("Textract could not process a receipt")
         if exc.response["Error"]["Code"] in ("BadDocumentException", "UnsupportedDocumentException"):
             text = "I couldn't read that image. Please upload a clearer JPEG or PNG photo of your receipt."
         else:
             text = "I couldn't read your receipt right now. Please upload it again in a moment."
-        ctx.telegram.send_message(ctx.chat_id, text)
+        ctx.telegram.send_message(ctx.chat_id, text, parse_mode=None)
     except (BotoCoreError, TelegramError):
         logger.exception("Could not download or analyze a receipt")
-        ctx.telegram.send_message(ctx.chat_id, "I couldn't read your receipt right now. Please upload it again in a moment.")
+        ctx.telegram.send_message(ctx.chat_id, "I couldn't read your receipt right now. Please upload it again in a moment.", parse_mode=None)
     finally:
         if saved is None:
             repository.finish_input(ctx.user_id, ctx.chat_id, claim, event_id)

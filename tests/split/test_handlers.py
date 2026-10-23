@@ -39,7 +39,7 @@ def test_split_upload_returns_items_once_and_keeps_collecting(
 
 
 @pytest.mark.parametrize("user_id, chat_id", [(1, 10), (2, 10), (1, 20)])
-def test_photos_without_a_matching_session_prompt_restart_without_analysis(services, textract, user_id, chat_id):
+def test_photos_without_a_matching_session_are_ignored_without_analysis(services, textract, user_id, chat_id):
     seed_profile(user_id, "A")
     if (user_id, chat_id) != (1, 10):
         router.dispatch_update(message_update("/split"), services)
@@ -47,9 +47,7 @@ def test_photos_without_a_matching_session_prompt_restart_without_analysis(servi
 
     router.dispatch_update(photo_update(user_id=user_id, chat_id=chat_id), services)
 
-    assert len(services.telegram.sent) == sent_before + 1
-    assert services.telegram.sent[-1]["text"] == "There's no active split session. Send /split to start again."
-    assert services.telegram.sent[-1]["chat_id"] == chat_id
+    assert len(services.telegram.sent) == sent_before
     assert services.telegram.downloaded == []
 
 
