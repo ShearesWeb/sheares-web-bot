@@ -134,11 +134,14 @@ def pay_callback(ctx):
     if not _private(ctx):
         _answer(ctx)
         return
-    match = re.fullmatch(r"split_pay:([a-f0-9]{32})", ctx.data)
-    owner = ledger.payable_owner(ctx.user_id, match[1]) if match else None
-    result = ledger.mark_paid(owner, match[1], ctx.user_id, ctx.user_id) if owner else "not_found"
+    match = re.fullmatch(r"split_pay:(?:(ok):)?([a-f0-9]{32})", ctx.data)
+    owner = ledger.payable_owner(ctx.user_id, match[2]) if match else None
+    if owner and not match[1]:
+        _confirm_payment(ctx, owner, match[2], ctx.user_id, "owe")
+        return
+    result = ledger.mark_paid(owner, match[2], ctx.user_id, ctx.user_id) if owner else "not_found"
     if owner and result in ("paid", "already_paid"):
-        reminders.stop_if_paid(owner, match[1], ctx.scheduler)
+        reminders.stop_if_paid(owner, match[2], ctx.scheduler)
     _payment_result(ctx, result, "owe")
 
 
@@ -148,11 +151,32 @@ def receive_callback(ctx):
     if not _private(ctx):
         _answer(ctx)
         return
-    match = re.fullmatch(r"split_recv:([a-f0-9]{32}):([0-9]{1,16})", ctx.data)
-    result = ledger.mark_paid(ctx.user_id, match[1], match[2], ctx.user_id) if match else "not_found"
+    match = re.fullmatch(r"split_recv:(?:(ok):)?([a-f0-9]{32}):([0-9]{1,16})", ctx.data)
+    if match and not match[1]:
+        _confirm_payment(ctx, ctx.user_id, match[2], match[3], "owed")
+        return
+    result = ledger.mark_paid(ctx.user_id, match[2], match[3], ctx.user_id) if match else "not_found"
     if match and result in ("paid", "already_paid"):
-        reminders.stop_if_paid(ctx.user_id, match[1], ctx.scheduler)
+        reminders.stop_if_paid(ctx.user_id, match[2], ctx.scheduler)
     _payment_result(ctx, result, "owed")
+
+
+def _confirm_payment(ctx, owner_id, bill_id, debtor_id, mode):
+    bill = ledger.get_bill(owner_id, bill_id)
+    amount = ledger.outstanding_shares(bill).get(str(debtor_id)) if bill else None
+    if amount is None:
+        result = "already_paid" if bill and bill.get("payments", {}).get(str(debtor_id)) else "not_found"
+        _payment_result(ctx, result, mode)
+        return
+    action = "paid" if mode == "owe" else "received"
+    data = f"split_pay:ok:{bill_id}" if mode == "owe" else f"split_recv:ok:{bill_id}:{debtor_id}"
+    _answer(ctx)
+    _deliver(
+        ctx, f"<b>Confirm payment</b>\n\nMark <b>{billing.money(amount)}</b> as {action}?\n"
+        "This clears the share for both people and removes it from reminders.",
+        [[{"text": f"Confirm {action}", "callback_data": data}],
+         [{"text": "Back", "callback_data": f"split_list:{mode}:0"}]], edit=True,
+    )
 
 
 def _payment_result(ctx, result, mode):

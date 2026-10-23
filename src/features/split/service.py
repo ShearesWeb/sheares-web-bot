@@ -8,7 +8,17 @@ import unicodedata
 import boto3
 from botocore.config import Config
 
+from features.split.amounts import parse_amount
+
 MAX_RECEIPT_BYTES = 10 * 1024 * 1024
+TOTAL_LABELS = {
+    "total": 1, "totalamount": 1, "grandtotal": 2, "totaldue": 2,
+    "amountdue": 2, "totalpayable": 2, "amountpayable": 2,
+}
+TOTAL_LINE = re.compile(
+    r"\s*(total\s*due|grand\s*total|amount\s*due|total\s*amount|total\s*payable|amount\s*payable|total)"
+    r"\s*:?\s*(.+?)\s*", re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -30,8 +40,11 @@ class Receipt:
     service_charge: str = ""
     tax: str = ""
     total: str = ""
+    service_charge_label: str = ""
+    tax_label: str = ""
 
     def __post_init__(self):
+        object.__setattr__(self, "items", tuple(item for item in self.items if parse_amount(item.price) != 0))
         for field in ("subtotal", "service_charge", "tax", "total"):
             object.__setattr__(self, field, _format_amount(getattr(self, field)))
         object.__setattr__(self, "subtotal", _subtotal_before_tax(self))
@@ -40,7 +53,7 @@ class Receipt:
 @cache
 def _textract():
     return boto3.client("textract", config=Config(
-        connect_timeout=3, read_timeout=20, retries={"total_max_attempts": 1},
+        connect_timeout=2, read_timeout=8, retries={"total_max_attempts": 1},
     ))
 
 
@@ -60,34 +73,71 @@ def _fields(fields):
     }
 
 
-def _amount(text):
-    value = unicodedata.normalize("NFKC", str(text)).strip()
-    negative = value.startswith("(") and value.endswith(")")
-    if negative:
-        value = value[1:-1].strip()
-    value = re.sub(r"(?:SGD|S\s*\$|\$)", "", value, flags=re.IGNORECASE).strip()
-    if not re.fullmatch(r"[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?", value):
-        return None
-    amount = Decimal(value.replace(",", ""))
-    return -abs(amount) if negative else amount
+def _summary_fields(fields, blocks, item_prices=()):
+    summary, labelled_totals = {}, []
+    for field in fields:
+        kind = field.get("Type", {}).get("Text", "")
+        value = " ".join(field.get("ValueDetection", {}).get("Text", "").split())
+        if not value or (kind in ("TOTAL", "AMOUNT_DUE") and parse_amount(value) is None):
+            # Receipts can have a printed Total Due followed by an empty Total
+            # line for handwritten tips. The empty field must not replace it.
+            continue
+        printed_label = " ".join(field.get("LabelDetection", {}).get("Text", "").split()).rstrip(":：").strip()
+        if kind == "SUBTOTAL" and not printed_label and any(
+            field.get("PageNumber", 1) == price.get("PageNumber", 1)
+            and _inside(field.get("ValueDetection", {}).get("Geometry", {}), price.get("ValueDetection", {}).get("Geometry", {}))
+            for price in item_prices
+        ):
+            # A cart's first item price can be misclassified as an unlabelled
+            # subtotal. It is not a summary when it occupies the item price.
+            continue
+        label = re.sub(r"[^a-z]", "", printed_label.casefold())
+        if label in TOTAL_LABELS:
+            if parse_amount(value) is not None:
+                labelled_totals.append((TOTAL_LABELS[label], value))
+            # Textract can label Total Due as SUBTOTAL. Its printed label
+            # identifies the total and must not overwrite the real subtotal.
+            if kind not in ("TOTAL", "AMOUNT_DUE"):
+                continue
+        summary[kind] = value
+        if kind in ("TAX", "SERVICE_CHARGE"):
+            summary[f"{kind}_LABEL"] = printed_label
+    if "TOTAL" in summary:
+        return summary
+    if "AMOUNT_DUE" in summary:
+        summary["TOTAL"] = summary["AMOUNT_DUE"]
+        return summary
+    if not labelled_totals:
+        # AnalyzeExpense includes OCR lines as well as summary fields. Accept
+        # an explicitly printed total when its summary classification is absent.
+        for block in blocks:
+            if block.get("BlockType") != "LINE":
+                continue
+            match = TOTAL_LINE.fullmatch(block.get("Text", ""))
+            if match and parse_amount(match[2]) is not None:
+                label = re.sub(r"[^a-z]", "", match[1].casefold())
+                labelled_totals.append((TOTAL_LABELS[label], match[2]))
+    if labelled_totals:
+        summary["TOTAL"] = max(labelled_totals, key=lambda candidate: candidate[0])[1]
+    return summary
 
 
 def _format_amount(text):
-    amount = _amount(text)
+    amount = parse_amount(text)
     if amount is not None:
         return f"{amount:.2f}"
     return re.sub(r"S\s*\$", "", str(text), flags=re.IGNORECASE).strip()
 
 
 def _subtotal_before_tax(receipt):
-    total = _amount(receipt.total)
-    tax = _amount(receipt.tax) if receipt.tax else Decimal("0")
-    service_charge = _amount(receipt.service_charge) if receipt.service_charge else Decimal("0")
+    total = parse_amount(receipt.total)
+    tax = parse_amount(receipt.tax) if receipt.tax else Decimal("0")
+    service_charge = parse_amount(receipt.service_charge) if receipt.service_charge else Decimal("0")
     if total is None or tax is None or service_charge is None or tax + service_charge == 0:
         return receipt.subtotal
 
     before_tax = total - tax - service_charge
-    item_amounts = [_amount(item.price) for item in receipt.items]
+    item_amounts = [parse_amount(item.price) for item in receipt.items]
     item_subtotal = (
         sum(item_amounts, Decimal("0"))
         if item_amounts and all(amount is not None for amount in item_amounts) else None
@@ -95,7 +145,7 @@ def _subtotal_before_tax(receipt):
     # Keep a consistent printed subtotal or item sum, including receipts that
     # round the final payment by up to five cents. Tax-inclusive item prices
     # equal the total, so their pre-tax subtotal must be derived instead.
-    for candidate in (_amount(receipt.subtotal), item_subtotal):
+    for candidate in (parse_amount(receipt.subtotal), item_subtotal):
         if candidate is not None and candidate != total and abs(candidate - before_tax) <= Decimal("0.05"):
             return f"{candidate:.2f}"
     return f"{before_tax:.2f}"
@@ -214,11 +264,37 @@ def _has_subitems(fields, following, blocks):
     return False
 
 
+def _is_booking_item(fields):
+    item, price, row = (fields.get(kind, {}) for kind in ("ITEM", "PRICE", "EXPENSE_ROW"))
+    name = " ".join(item.get("ValueDetection", {}).get("Text", "").split())
+    text = " ".join(row.get("ValueDetection", {}).get("Text", "").split())
+    if not name or not re.match(
+        re.escape(name) + r"\s+date\s*:.*?\bstart\s*time\s*:.*?\bend\s*time\s*:", text, re.IGNORECASE,
+    ):
+        return False
+    if not item.get("PageNumber", 1) == price.get("PageNumber", 1) == row.get("PageNumber", 1):
+        return False
+    item_region, price_region, row_region = (
+        field.get("ValueDetection", {}).get("Geometry", {}) for field in (item, price, row)
+    )
+    if not _inside(item_region, row_region) or not _inside(price_region, row_region):
+        return False
+    item_box, price_box = _box(item_region), _box(price_region)
+    return (
+        item_box["Top"] + item_box["Height"] <= price_box["Top"]
+        and abs(item_box["Left"] - price_box["Left"]) <= max(item_box["Height"] * 2, 0.02)
+    )
+
+
 def _priced_item_name(fields, blocks, *, has_subitems):
     name_field = fields.get("ITEM") or fields.get("EXPENSE_ROW")
     if not name_field:
         return ""
     name = name_field.get("ValueDetection", {})
+    # Booking carts put the title above date/time details and the price. Keep
+    # Textract's ITEM title only when the enclosing row confirms that layout.
+    if not has_subitems and _is_booking_item(fields):
+        return " ".join(name.get("Text", "").split())
     price = fields["PRICE"].get("ValueDetection", {})
     name_geometry, price_geometry = name.get("Geometry", {}), price.get("Geometry", {})
     if _box(name_geometry) and _box(price_geometry):
@@ -270,10 +346,63 @@ def _with_continuations(name, following, page):
     return name
 
 
+def _booking_amount(text):
+    return parse_amount(re.sub(r"\s*w\s*/\s*GST\s*$", "", text, flags=re.IGNORECASE))
+
+
+def _booking_rows(blocks):
+    """Read complete booking cards even when LineItemGroups omits a row."""
+    lines = sorted((
+        block for block in blocks
+        if block.get("BlockType") == "LINE" and _box(block.get("Geometry", {}))
+        and block.get("Text", "").strip()
+    ), key=lambda block: (block.get("Page", 1), _box(block["Geometry"])["Top"]))
+    labels = (r"date\s*:", r"start\s*time\s*:", r"end\s*time\s*:")
+    if not all(any(re.match(pattern, line["Text"].strip(), re.IGNORECASE) for line in lines) for pattern in labels):
+        return []
+    bookings = []
+    for index, title in enumerate(lines):
+        page, title_box = title.get("Page", 1), _box(title["Geometry"])
+        tolerance = max(title_box["Height"] * 2, 0.02)
+        following = [
+            line for line in lines[index + 1:]
+            if line.get("Page", 1) == page
+            and abs(_box(line["Geometry"])["Left"] - title_box["Left"]) <= tolerance
+            and title_box["Top"] < _box(line["Geometry"])["Top"]
+            <= title_box["Top"] + max(title_box["Height"] * 10, 0.1)
+        ]
+        if len(following) < 4:
+            continue
+        date, start, end, price = following[:4]
+        if not all(re.match(pattern, line["Text"].strip(), re.IGNORECASE) for pattern, line in zip(labels, (date, start, end))):
+            continue
+        amount = _booking_amount(price["Text"])
+        name = " ".join(title["Text"].split())
+        if amount is None or _booking_amount(name) is not None:
+            continue
+        bounds = [_box(line["Geometry"]) for line in (title, date, start, end, price)]
+        left = min(box["Left"] for box in bounds)
+        right = max(box["Left"] + box["Width"] for box in bounds)
+        bottom = max(box["Top"] + box["Height"] for box in bounds)
+        region = {"BoundingBox": {
+            "Left": left, "Top": title_box["Top"],
+            "Width": right - left, "Height": bottom - title_box["Top"],
+        }}
+        price_field = {
+            "Type": {"Text": "PRICE"}, "PageNumber": page,
+            "ValueDetection": {"Text": str(amount), "Geometry": price["Geometry"]},
+        }
+        bookings.append((ReceiptItem(name, str(amount)), price_field, region))
+    return bookings
+
+
 def parse_receipts(response):
     receipts = []
     for document in response.get("ExpenseDocuments", []):
-        items = []
+        blocks = document.get("Blocks", [])
+        bookings = _booking_rows(blocks)
+        items = [(item, price) for item, price, _ in bookings]
+        item_prices = [price for _, price, _ in bookings]
         for group in document.get("LineItemGroups", []):
             entries = [
                 {
@@ -287,22 +416,43 @@ def parse_receipts(response):
                 # Unpriced lines are set components or description continuations, not billable items.
                 if not fields.get("PRICE"):
                     continue
+                item_prices.append(raw_fields["PRICE"])
+                price_field = raw_fields["PRICE"]
+                booking_index = next((
+                    index for index, (_, card_price, region) in enumerate(bookings)
+                    if price_field.get("PageNumber", 1) == card_price.get("PageNumber", 1)
+                    and _inside(price_field.get("ValueDetection", {}).get("Geometry", {}), region)
+                ), None)
+                if booking_index is not None:
+                    # Use each printed card once, including cards that Textract
+                    # splits into several rows or gives a partial description.
+                    item, card_price = items[booking_index]
+                    if not item.quantity and fields.get("QUANTITY"):
+                        items[booking_index] = (ReceiptItem(item.name, item.price, fields["QUANTITY"]), card_price)
+                    continue
                 following = []
                 for candidate in entries[index + 1:]:
                     if _fields(candidate.values()).get("PRICE"):
                         break
                     following.append(candidate)
-                has_subitems = _has_subitems(raw_fields, following, document.get("Blocks", []))
-                name = _priced_item_name(raw_fields, document.get("Blocks", []), has_subitems=has_subitems)
+                has_subitems = _has_subitems(raw_fields, following, blocks)
+                name = _priced_item_name(raw_fields, blocks, has_subitems=has_subitems)
                 if name:
                     if not has_subitems and "ITEM" in raw_fields:
                         name = _with_continuations(name, following, raw_fields["ITEM"].get("PageNumber", 1))
                     # PRICE is the line total; UNIT_PRICE is a different field.
-                    items.append(ReceiptItem(name, fields["PRICE"], fields.get("QUANTITY", "")))
-        summary = _fields(document.get("SummaryFields", []))
+                    items.append((ReceiptItem(name, fields["PRICE"], fields.get("QUANTITY", "")), price_field))
+        if bookings:
+            items.sort(key=lambda entry: (
+                entry[1].get("PageNumber", 1),
+                _box(entry[1].get("ValueDetection", {}).get("Geometry", {})).get("Top", 1),
+            ))
+        summary = _summary_fields(document.get("SummaryFields", []), blocks, item_prices)
         receipts.append(Receipt(
-            items=tuple(items), vendor=summary.get("VENDOR_NAME", ""),
+            items=tuple(item for item, _ in items), vendor=summary.get("VENDOR_NAME", ""),
             subtotal=summary.get("SUBTOTAL", ""), service_charge=summary.get("SERVICE_CHARGE", ""),
             tax=summary.get("TAX", ""), total=summary.get("TOTAL", ""),
+            service_charge_label=summary.get("SERVICE_CHARGE_LABEL", ""),
+            tax_label=summary.get("TAX_LABEL", ""),
         ))
     return receipts

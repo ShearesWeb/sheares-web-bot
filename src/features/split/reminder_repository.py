@@ -116,23 +116,13 @@ def cancel_setup(owner_id, bill_id):
     )
 
 
-def replace_active(owner_id, bill_id, generation, reminder):
-    """Upgrade an old schedule without overwriting a concurrent stop or setup."""
-    return _update(
-        ledger.bill_key(owner_id, bill_id), UpdateExpression="SET #r = :reminder",
-        ConditionExpression="#r.#enabled = :yes AND #r.#generation = :generation",
-        ExpressionAttributeNames={"#r": "reminder", "#enabled": "enabled", "#generation": "generation"},
-        ExpressionAttributeValues={":yes": True, ":generation": generation, ":reminder": reminder},
-    )
-
-
 def disable(owner_id, bill_id, generation, reason):
     return _update(
         ledger.bill_key(owner_id, bill_id),
         UpdateExpression="SET #r.#enabled = :no, #r.stopReason = :reason, #r.stoppedAt = :now",
-        ConditionExpression="#r.#generation = :generation",
+        ConditionExpression="#r.#generation = :generation AND #r.#enabled = :yes",
         ExpressionAttributeNames={"#r": "reminder", "#enabled": "enabled", "#generation": "generation"},
-        ExpressionAttributeValues={":no": False, ":generation": generation, ":reason": reason, ":now": int(time.time())},
+        ExpressionAttributeValues={":no": False, ":yes": True, ":generation": generation, ":reason": reason, ":now": int(time.time())},
     )
 
 
@@ -148,10 +138,11 @@ def claim_delivery(owner_id, bill_id, generation, slot):
         ledger.bill_key(owner_id, bill_id), UpdateExpression="SET #r.#slot = :slot",
         ConditionExpression=(
             "#r.#enabled = :yes AND #r.#generation = :generation "
+            "AND #r.endsAt > :now "
             "AND (attribute_not_exists(#r.#slot) OR #r.#slot < :slot)"
         ),
         ExpressionAttributeNames={**_delivery_names(slot), "#enabled": "enabled"},
-        ExpressionAttributeValues={":yes": True, ":generation": generation, ":slot": slot},
+        ExpressionAttributeValues={":yes": True, ":generation": generation, ":slot": slot, ":now": int(time.time())},
     )
 
 

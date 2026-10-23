@@ -107,7 +107,7 @@ def test_each_addition_done_and_final_bill_show_all_expenses_with_receipts_last(
     text = services.telegram.sent[-1]["text"]
     assert text.index("KFC - 20.00") < text.index("Burger King - 36.00") < text.index("Receipt 1:")
     assert "Tea &amp; cake (QTY: 1) - 12.00" in text
-    assert "--------------------\n<b>Total: 77.80</b>" in text
+    assert "----------------------------\n<b>Total: 77.80</b>" in text
 
     send("/done")
     choose_equal(services)
@@ -287,3 +287,17 @@ def test_receipt_with_unreadable_total_and_tax_requires_manual_final_amount():
     receipt = service.Receipt((service.ReceiptItem("Meal", "10.00"),), tax="0.90")
     with pytest.raises(ValueError, match="final total"):
         billing.receipt_expenses([receipt])
+
+
+def test_saved_receipt_summary_hides_zero_items_and_renumbers_remaining_items():
+    receipt = {
+        "items": [{"name": "Miscellaneous charges", "price": "0.00"},
+                  {"name": "TOYOTAVIOS", "price": "81.75"}],
+        "totalCents": 8175,
+    }
+
+    text = "\n".join(billing.receipt_lines(receipt, 1))
+
+    assert "Miscellaneous charges" not in text
+    assert "1. TOYOTAVIOS - 81.75" in text
+    assert "Total: 81.75" in text

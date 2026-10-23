@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class Scheduler(Protocol):
     def schedule(self, name: str, run_at: datetime, job: str, payload: dict) -> None: ...
     def schedule_recurring(self, name: str, interval_seconds: int, job: str, payload: dict,
-                           *, start_at: datetime | None = None) -> None: ...
+                           *, start_at: datetime | None = None, end_at: datetime | None = None) -> None: ...
     def cancel(self, name: str) -> None: ...
 
 
@@ -25,6 +25,14 @@ def _recurring_start(interval_seconds, start_at):
     if start_at.tzinfo is None or start_at.utcoffset() is None:
         raise ValueError("The first recurring run must include a timezone.")
     return start_at.astimezone(UTC)
+
+
+def _recurring_end(first_run, end_at):
+    if end_at is None:
+        return None
+    if end_at.tzinfo is None or end_at.utcoffset() is None or end_at <= first_run:
+        raise ValueError("The recurring end must include a timezone and follow the first run.")
+    return end_at.astimezone(UTC)
 
 
 class EventBridgeScheduler:
@@ -50,16 +58,19 @@ class EventBridgeScheduler:
             ActionAfterCompletion="DELETE",
         )
 
-    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at=None):
+    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at=None, end_at=None):
         hours, remainder = divmod(interval_seconds, 3600)
         if hours < 1 or remainder:
             raise ValueError("Recurring schedules must use whole hours.")
         first_run = _recurring_start(interval_seconds, start_at)
+        end = _recurring_end(first_run, end_at)
+        bounds = {"EndDate": end, "ActionAfterCompletion": "DELETE"} if end is not None else {}
         try:
             self._client.create_schedule(
                 Name=name, ClientToken=name,
                 ScheduleExpression=f"rate({hours} {'hour' if hours == 1 else 'hours'})",
                 StartDate=first_run,
+                **bounds,
                 FlexibleTimeWindow={"Mode": "OFF"},
                 Target={"Arn": self._target_arn, "RoleArn": self._role_arn,
                         "Input": json.dumps({"job": job, "payload": payload})},
@@ -90,10 +101,11 @@ class InProcessScheduler:
         timer.daemon = True
         timer.start()
 
-    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at=None):
+    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at=None, end_at=None):
         if interval_seconds <= 0:
             raise ValueError("The reminder interval must be positive.")
         first_run = _recurring_start(interval_seconds, start_at)
+        end = _recurring_end(first_run, end_at)
         interval = timedelta(seconds=interval_seconds)
         with self._lock:
             if name in self._recurring:
@@ -105,6 +117,9 @@ class InProcessScheduler:
             with self._lock:
                 if stopped.is_set():
                     return
+                if end is not None and run_at > end:
+                    self.cancel(name)
+                    return
                 delay = max(0.0, (run_at - datetime.now(UTC)).total_seconds())
                 timer = threading.Timer(delay, fire, args=(run_at,))
                 timer.daemon = True
@@ -113,6 +128,9 @@ class InProcessScheduler:
 
         def fire(run_at):
             if stopped.is_set():
+                return
+            if end is not None and datetime.now(UTC) >= end:
+                self.cancel(name)
                 return
             try:
                 router.dispatch_job(job, payload, self._telegram, scheduler=self)

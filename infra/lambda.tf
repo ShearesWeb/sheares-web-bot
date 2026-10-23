@@ -19,7 +19,7 @@ module "bot_function" {
 
   depends_on = [null_resource.push_placeholder_image]
 
-  timeout     = 60
+  timeout     = 30
   memory_size = 512
 
   environment_variables = {

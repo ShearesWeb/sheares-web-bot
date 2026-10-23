@@ -7,8 +7,10 @@ locals {
 # One item per (user, record type): profile = "PROFILE" holds block/level/year,
 # profile = "LAUNDRY" holds the set of machines the user currently has claimed.
 # profile = "SPLIT#<chat_id>" holds that user's active bill in the chat.
+# profile = "SPLIT_OCR_QUOTA" holds each user's Singapore-day image allowance.
 # profile = "SPLIT_BILL#<session_id>" preserves completed bills and participant IDs.
 # profile = "SPLIT_PAYABLE#<session_id>" links a participant to the creator's bill.
+# Its settled flag filters balances without discarding payment-history pointers.
 # Settlement status lives on the creator's bill, shared by both balance views.
 # A bill's reminder map holds the target group, interval, generation and delivery slot.
 # profile = "SPLIT_REMINDER_SETUP" holds one expiring reminder setup per creator.

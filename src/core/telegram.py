@@ -63,13 +63,13 @@ class TelegramClient:
 
     def download_file(self, file_id, *, max_bytes):
         try:
-            file = self._call("getFile", {"file_id": file_id})
+            file = self._call("getFile", {"file_id": file_id}, http_timeout=3)
             if file.get("file_size", 0) > max_bytes:
                 raise FileTooLargeError("The uploaded file is too large.")
             if not file.get("file_path"):
                 raise TelegramError("Telegram did not provide a download path.")
             with requests.get(
-                f"{self._file_base_url}/{file['file_path']}", stream=True, timeout=10,
+                f"{self._file_base_url}/{file['file_path']}", stream=True, timeout=(2, 4),
             ) as response:
                 if response.status_code != 200:
                     raise TelegramError(f"File download failed with HTTP {response.status_code}.")
