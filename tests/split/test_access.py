@@ -4,6 +4,7 @@ import features  # noqa: F401
 from core.router import router
 from features.split import repository
 from support import callback_update, document_update, message_update, photo_update, seed_profile
+from features.profile import repository as profile_repository
 
 PROFILE_PROMPT = "Please create a /profile first."
 TOKEN = "a" * 32
@@ -95,3 +96,25 @@ def test_ordinary_chat_without_a_split_does_not_prompt_for_a_profile(services):
     router.dispatch_update(message_update("Hello"), services)
 
     assert services.telegram.sent == []
+
+
+@pytest.mark.parametrize("upload", [photo_update, document_update])
+@pytest.mark.parametrize("has_profile", [False, True])
+@pytest.mark.parametrize("chat_type", ["group", "supergroup"])
+def test_group_images_are_ignored_before_the_profile_check(services, textract, monkeypatch, upload, has_profile, chat_type):
+    if has_profile:
+        seed_profile(1, "A")
+
+    def unexpected_profile_read(*args):
+        raise AssertionError("A group photo must not enter the profile or split flow")
+
+    monkeypatch.setattr(profile_repository, "get_profile", unexpected_profile_read)
+    update = upload(chat_id=-100)
+    update["message"]["chat"]["type"] = chat_type
+    update["message"]["reply_to_message"] = {"from": {"id": 999, "is_bot": True}, "text": "Payment reminder"}
+
+    router.dispatch_update(update, services)
+
+    assert services.telegram.sent == []
+    assert services.telegram.edited == []
+    assert services.telegram.downloaded == []

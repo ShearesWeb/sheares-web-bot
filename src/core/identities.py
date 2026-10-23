@@ -14,14 +14,19 @@ def remember_user(user):
         return
     user_id = int(user["id"])
     username = user.get("username", "")
-    users_table().put_item(Item={
+    identity = {
         "userID": f"USER#{user_id}", "profile": "IDENTITY", "telegramID": str(user_id),
         "username": username, "firstName": user.get("first_name", ""),
-    })
+    }
+    if get_user(user_id) != identity:
+        users_table().put_item(Item=identity)
     if username:
-        users_table().put_item(Item={
+        alias = {
             "userID": f"USERNAME#{username.casefold()}", "profile": "IDENTITY", "telegramID": str(user_id),
-        })
+        }
+        current = users_table().get_item(Key={"userID": alias["userID"], "profile": "IDENTITY"}, ConsistentRead=True).get("Item")
+        if current != alias:
+            users_table().put_item(Item=alias)
 
 
 def resolve_username(username):

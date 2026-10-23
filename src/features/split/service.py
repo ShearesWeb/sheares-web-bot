@@ -8,6 +8,8 @@ import unicodedata
 import boto3
 from botocore.config import Config
 
+from features.split.amounts import parse_amount
+
 MAX_RECEIPT_BYTES = 10 * 1024 * 1024
 
 
@@ -40,7 +42,7 @@ class Receipt:
 @cache
 def _textract():
     return boto3.client("textract", config=Config(
-        connect_timeout=3, read_timeout=20, retries={"total_max_attempts": 1},
+        connect_timeout=2, read_timeout=8, retries={"total_max_attempts": 1},
     ))
 
 
@@ -60,34 +62,22 @@ def _fields(fields):
     }
 
 
-def _amount(text):
-    value = unicodedata.normalize("NFKC", str(text)).strip()
-    negative = value.startswith("(") and value.endswith(")")
-    if negative:
-        value = value[1:-1].strip()
-    value = re.sub(r"(?:SGD|S\s*\$|\$)", "", value, flags=re.IGNORECASE).strip()
-    if not re.fullmatch(r"[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?", value):
-        return None
-    amount = Decimal(value.replace(",", ""))
-    return -abs(amount) if negative else amount
-
-
 def _format_amount(text):
-    amount = _amount(text)
+    amount = parse_amount(text)
     if amount is not None:
         return f"{amount:.2f}"
     return re.sub(r"S\s*\$", "", str(text), flags=re.IGNORECASE).strip()
 
 
 def _subtotal_before_tax(receipt):
-    total = _amount(receipt.total)
-    tax = _amount(receipt.tax) if receipt.tax else Decimal("0")
-    service_charge = _amount(receipt.service_charge) if receipt.service_charge else Decimal("0")
+    total = parse_amount(receipt.total)
+    tax = parse_amount(receipt.tax) if receipt.tax else Decimal("0")
+    service_charge = parse_amount(receipt.service_charge) if receipt.service_charge else Decimal("0")
     if total is None or tax is None or service_charge is None or tax + service_charge == 0:
         return receipt.subtotal
 
     before_tax = total - tax - service_charge
-    item_amounts = [_amount(item.price) for item in receipt.items]
+    item_amounts = [parse_amount(item.price) for item in receipt.items]
     item_subtotal = (
         sum(item_amounts, Decimal("0"))
         if item_amounts and all(amount is not None for amount in item_amounts) else None
@@ -95,7 +85,7 @@ def _subtotal_before_tax(receipt):
     # Keep a consistent printed subtotal or item sum, including receipts that
     # round the final payment by up to five cents. Tax-inclusive item prices
     # equal the total, so their pre-tax subtotal must be derived instead.
-    for candidate in (_amount(receipt.subtotal), item_subtotal):
+    for candidate in (parse_amount(receipt.subtotal), item_subtotal):
         if candidate is not None and candidate != total and abs(candidate - before_tax) <= Decimal("0.05"):
             return f"{candidate:.2f}"
     return f"{before_tax:.2f}"

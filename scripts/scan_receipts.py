@@ -11,15 +11,9 @@ from features.split.service import analyze_receipt
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("images", nargs="*", type=Path, help="JPEG/PNG paths; defaults to this feature's images folder")
+    parser.add_argument("images", nargs="+", type=Path, help="Explicit JPEG/PNG receipt paths (calls live AWS Textract)")
     args = parser.parse_args()
-    images = args.images or sorted(
-        path for path in (Path(__file__).parent / "images").glob("*")
-        if path.suffix.lower() in (".png", ".jpg", ".jpeg")
-    )
-    if not images:
-        parser.error("No receipt images found. Provide one or more JPEG/PNG paths.")
-    for path in images:
+    for path in args.images:
         print(f"\n--- {path.name} ---")
         try:
             receipts = analyze_receipt(path.read_bytes())

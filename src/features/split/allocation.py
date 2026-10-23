@@ -4,7 +4,8 @@ from decimal import Decimal
 from fractions import Fraction
 import re
 
-from features.split import billing, service
+from features.split import billing
+from features.split.amounts import parse_amount
 
 METHODS = {"equal": "Equal", "exact": "Exact amounts", "percentage": "Percentages", "item": "By item"}
 
@@ -54,7 +55,7 @@ def _rows(text):
 
 
 def _exact_amount(value):
-    amount = service._amount(value)
+    amount = parse_amount(value)
     if amount is None or amount < 0 or amount > Decimal(billing.MAX_CENTS) / 100 or amount * 100 != (amount * 100).to_integral_value():
         raise ValueError("Enter nonnegative amounts with at most two decimal places, for example: 1 - 20.00")
     return int(amount * 100)
@@ -88,7 +89,7 @@ def item_catalog(expenses):
     items = []
     for batch_index, batch in ordered:
         for item_index, item in enumerate(batch["items"]):
-            amount = service._amount(item.get("price", ""))
+            amount = parse_amount(item.get("price", ""))
             if amount is None or amount < 0 or amount > Decimal(billing.MAX_CENTS) / 100 or amount * 100 != (amount * 100).to_integral_value():
                 raise ValueError("Splitting by item needs a readable, nonnegative price on every item. Use exact amounts, percentages, or equal splitting for this bill.")
             items.append({

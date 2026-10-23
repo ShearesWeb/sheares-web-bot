@@ -144,9 +144,10 @@ def test_download_fetches_getfile_path_and_streams_bytes(posts, downloads):
     assert calls[0]["url"].endswith("/getFile")
     assert calls[0]["json"] == {"file_id": "receipt-id"}
     assert get_calls == [{
-        "url": "https://api.telegram.org/file/bottok/photos/receipt.jpg", "stream": True, "timeout": 10,
+        "url": "https://api.telegram.org/file/bottok/photos/receipt.jpg", "stream": True, "timeout": (2, 4),
     }]
     assert stream.closed
+    assert calls[0]["timeout"] == 3
 
 
 def test_download_rejects_oversized_metadata_without_downloading(posts, downloads):

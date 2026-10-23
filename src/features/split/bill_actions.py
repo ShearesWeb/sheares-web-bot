@@ -14,8 +14,7 @@ def _answer(ctx, text=None):
 
 
 def _owned_bill(ctx, bill_id):
-    bill = ledger.get_bill(ctx.user_id, bill_id)
-    return ledger.index_bill(bill) if bill else None
+    return ledger.get_bill(ctx.user_id, bill_id)
 
 
 def _show(ctx, bill):

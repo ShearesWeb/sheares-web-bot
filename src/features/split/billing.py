@@ -4,7 +4,7 @@ from decimal import Decimal
 from html import escape
 import re
 
-from features.split import service
+from features.split.amounts import parse_amount
 
 MAX_ITEMS = 200
 MAX_BATCHES = 50
@@ -17,7 +17,7 @@ def money(cents):
 
 
 def _cents(value):
-    amount = service._amount(value)
+    amount = parse_amount(value)
     if amount is None or amount <= 0 or amount * 100 != (amount * 100).to_integral_value():
         raise ValueError("Amounts must be positive numbers with at most two decimal places.")
     cents = int(amount * 100)
@@ -45,11 +45,11 @@ def receipt_expenses(receipts):
     for receipt in receipts:
         if not receipt.items:
             continue
-        total = service._amount(receipt.total)
+        total = parse_amount(receipt.total)
         if total is None:
             if receipt.tax or receipt.service_charge:
                 raise ValueError("I couldn't read the receipt's final total. Add it as text, for example: Receipt - 33.80")
-            prices = [service._amount(item.price) for item in receipt.items]
+            prices = [parse_amount(item.price) for item in receipt.items]
             if any(price is None for price in prices):
                 raise ValueError("I couldn't read all the prices. Add the final amount as text, for example: Receipt - 33.80")
             total = sum(prices, Decimal("0"))
@@ -71,6 +71,42 @@ def validate_capacity(existing, added):
 
 def total_cents(expenses):
     return sum(int(batch["totalCents"]) for batch in expenses)
+
+
+def deletion_options(expenses):
+    """List text lines first, followed by whole receipts, as in the bill summary."""
+    text, receipts = [], []
+    for batch_index, batch in enumerate(expenses):
+        if batch["source"] == "text":
+            for item_index, item in enumerate(batch["items"]):
+                text.append({
+                    "name": item["name"], "amountCents": _cents(item["price"]),
+                    "batchIndex": batch_index, "itemIndex": item_index,
+                })
+        elif batch["source"] == "receipt":
+            receipts.append({
+                "name": f"Receipt {len(receipts) + 1}", "amountCents": int(batch["totalCents"]),
+                "batchIndex": batch_index, "itemIndex": None,
+            })
+    return [*text, *receipts]
+
+
+def remove_expenses(expenses, options):
+    """Remove selected entries together, using their original positions."""
+    batches = {option["batchIndex"] for option in options if option["itemIndex"] is None}
+    selected_items = {(option["batchIndex"], option["itemIndex"]) for option in options if option["itemIndex"] is not None}
+    updated = []
+    for batch_index, batch in enumerate(expenses):
+        if batch_index in batches:
+            continue
+        items = [item for index, item in enumerate(batch["items"]) if (batch_index, index) not in selected_items]
+        if len(items) == len(batch["items"]):
+            updated.append(batch)
+        elif items:
+            updated.append({
+                **batch, "items": items, "totalCents": sum(_cents(item["price"]) for item in items),
+            })
+    return updated
 
 
 def parse_handles(text):
