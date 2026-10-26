@@ -8,6 +8,7 @@ from features.split import allocation, ledger
 
 SESSION_SECONDS = 15 * 60
 PROCESSING_SECONDS = 90
+EDITABLE_STATUSES = ("COLLECTING", "AWAITING_METHOD", "AWAITING_PARTICIPANTS", "AWAITING_ALLOCATION")
 
 
 def _key(user_id, chat_id):
@@ -92,12 +93,84 @@ def finish_input(user_id, chat_id, claim, event_id, *, expenses=None):
     if expenses:
         # Text expenses and extracted receipt items share this deadline.
         # Failed or empty additions must not keep an unfinished bill open.
-        expression += ", expiresAt = :expires"
+        expression += ", expiresAt = :expires REMOVE deletionToken, deletionChoices, deletionRevision"
         values[":expires"] = now + SESSION_SECONDS
     return _update(
         user_id, chat_id, UpdateExpression=expression,
         ConditionExpression="sessionID = :session AND processingToken = :token AND #status = :processing AND expiresAt > :now",
         ExpressionAttributeNames={"#status": "status"}, ExpressionAttributeValues=values,
+    )
+
+
+def begin_deletion(user_id, chat_id, session):
+    if session["status"] not in EDITABLE_STATUSES:
+        return None
+    return _update(
+        user_id, chat_id,
+        UpdateExpression="SET deletionToken = :token, deletionChoices = :choices, deletionRevision = :zero",
+        ConditionExpression=(
+            "sessionID = :session AND #status = :status AND expenses = :expenses AND expiresAt > :now"
+        ),
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":session": session["sessionID"], ":status": session["status"], ":expenses": session["expenses"],
+            ":now": int(time.time()), ":token": uuid4().hex, ":choices": {}, ":zero": 0,
+        },
+    )
+
+
+def set_deletion_choice(user_id, chat_id, session, option_index, *, selected, expected_state):
+    if (session["status"] not in EDITABLE_STATUSES or not session.get("deletionToken")
+            or option_index < 0 or expected_state < 0 or bool(expected_state % 2) == selected):
+        return None
+    path = "#choices.#option"
+    state_condition = f"(attribute_not_exists({path}) OR {path} = :expected)" if expected_state == 0 else f"{path} = :expected"
+    return _update(
+        user_id, chat_id,
+        UpdateExpression=f"SET deletionRevision = deletionRevision + :one, {path} = :next",
+        ConditionExpression=(
+            "sessionID = :session AND deletionToken = :token AND #status = :status "
+            f"AND expiresAt > :now AND {state_condition}"
+        ),
+        ExpressionAttributeNames={"#status": "status", "#choices": "deletionChoices", "#option": str(option_index)},
+        ExpressionAttributeValues={
+            ":session": session["sessionID"], ":token": session["deletionToken"], ":status": session["status"],
+            ":now": int(time.time()), ":expected": expected_state, ":next": expected_state + 1, ":one": 1,
+        },
+    )
+
+
+def delete_expenses(user_id, chat_id, session, expenses):
+    if session["status"] not in EDITABLE_STATUSES or not session.get("deletionToken"):
+        return None
+    return _update(
+        user_id, chat_id,
+        UpdateExpression=(
+            "SET expenses = :expenses, #status = :nextStatus "
+            "REMOVE deletionToken, deletionChoices, deletionRevision, selectionToken, requestedHandles, allocationUsers, splitMethod, "
+            "itemChoices, itemRevision, requestID"
+        ),
+        ConditionExpression=(
+            "sessionID = :session AND deletionToken = :token AND #status = :status "
+            "AND deletionRevision = :revision AND expenses = :previous AND expiresAt > :now"
+        ),
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":session": session["sessionID"], ":token": session["deletionToken"], ":status": session["status"],
+            ":previous": session["expenses"], ":expenses": expenses,
+            ":nextStatus": "COLLECTING" if expenses else "CANCELLED",
+            ":now": int(time.time()), ":revision": session["deletionRevision"],
+        },
+    )
+
+
+def cancel_deletion(user_id, chat_id, session):
+    return _update(
+        user_id, chat_id, UpdateExpression="REMOVE deletionToken, deletionChoices, deletionRevision",
+        ConditionExpression="sessionID = :session AND deletionToken = :token AND expiresAt > :now",
+        ExpressionAttributeValues={
+            ":session": session["sessionID"], ":token": session["deletionToken"], ":now": int(time.time()),
+        },
     )
 
 

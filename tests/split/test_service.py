@@ -3,7 +3,20 @@ import pytest
 from features.split import service
 
 
+def test_textract_timeouts_fit_the_receipt_webhook_budget():
+    service._textract.cache_clear()
+    try:
+        config = service._textract().meta.config
+        assert config.connect_timeout == 2 and config.read_timeout == 8
+        assert config.retries["total_max_attempts"] == 1
+    finally:
+        service._textract.cache_clear()
+
+
 def test_analyze_expense_uses_image_bytes_and_preserves_line_total(textract, receipt_image, expense_response):
+    for field in expense_response["ExpenseDocuments"][0]["SummaryFields"]:
+        if field["Type"]["Text"] == "TAX":
+            field["LabelDetection"] = {"Text": "GST"}
     textract.add_response("analyze_expense", expense_response, {"Document": {"Bytes": receipt_image}})
 
     (receipt,) = service.analyze_receipt(receipt_image)
@@ -12,6 +25,7 @@ def test_analyze_expense_uses_image_bytes_and_preserves_line_total(textract, rec
     assert (receipt.vendor, receipt.subtotal, receipt.tax, receipt.total) == (
         "Test Restaurant", "8.00", "0.72", "8.72",
     )
+    assert receipt.tax_label == "GST"
 
 
 @pytest.mark.parametrize("image_bytes, error", [
@@ -319,3 +333,252 @@ def test_quantities_are_numeric_and_common_digit_misreads_are_corrected(raw, exp
     response = {"ExpenseDocuments": [{"LineItemGroups": [{"LineItems": [{"LineItemExpenseFields": fields}]}]}]}
 
     assert service.parse_receipts(response)[0].items[0].quantity == expected
+
+
+@pytest.mark.parametrize("blank", ["", "________"])
+def test_blank_total_does_not_replace_a_readable_total(expense_response, blank):
+    expense_response["ExpenseDocuments"][0]["SummaryFields"].append(expense_field("TOTAL", blank))
+
+    assert service.parse_receipts(expense_response)[0].total == "8.72"
+
+
+@pytest.mark.parametrize("kind", ["AMOUNT_DUE", "OTHER", "SUBTOTAL"])
+def test_total_due_is_used_when_the_total_field_is_blank(expense_response, kind):
+    summary = expense_response["ExpenseDocuments"][0]["SummaryFields"]
+    summary[-1] = expense_field("TOTAL", "________")
+    due = expense_field(kind, "8.72")
+    due["LabelDetection"] = {"Text": "Total Due"}
+    summary.append(due)
+
+    receipt = service.parse_receipts(expense_response)[0]
+    assert receipt.total == "8.72"
+    assert receipt.subtotal == "8.00"
+
+
+def test_full_total_is_preferred_over_a_remaining_amount_due(expense_response):
+    expense_response["ExpenseDocuments"][0]["SummaryFields"].append(expense_field("AMOUNT_DUE", "2.00"))
+
+    assert service.parse_receipts(expense_response)[0].total == "8.72"
+
+
+def test_printed_total_due_can_be_read_from_ocr_lines(expense_response):
+    document = expense_response["ExpenseDocuments"][0]
+    document["SummaryFields"][-1] = expense_field("TOTAL", "________")
+    document["Blocks"] = [
+        {"BlockType": "LINE", "Text": "Total Due S$ 8.72"},
+        {"BlockType": "LINE", "Text": "Total: ________"},
+    ]
+
+    assert service.parse_receipts(expense_response)[0].total == "8.72"
+
+
+def test_total_fallback_does_not_use_subtotal_tax_or_tips(expense_response):
+    document = expense_response["ExpenseDocuments"][0]
+    document["SummaryFields"].pop()
+    document["Blocks"] = [{"BlockType": "LINE", "Text": text} for text in (
+        "Subtotal 8.00", "Tax 0.72", "Gratuity/Tips 0.00", "Total: ________",
+    )]
+
+    assert service.parse_receipts(expense_response)[0].total == ""
+
+
+@pytest.mark.parametrize("price", ["0", "0.00", "S$ 0.00"])
+def test_zero_priced_receipt_items_are_omitted(expense_response, price):
+    document = expense_response["ExpenseDocuments"][0]
+    document["LineItemGroups"][0]["LineItems"].append({"LineItemExpenseFields": [
+        expense_field("ITEM", "Miscellaneous charges"), expense_field("PRICE", price),
+    ]})
+
+    receipt = service.parse_receipts(expense_response)[0]
+
+    assert receipt.items == (service.ReceiptItem("Noodles_[special]*", "8.00", "2"),)
+    assert receipt.total == "8.72"
+
+
+@pytest.fixture
+def booking_cart_response():
+    # Reduced from image_2's actual Textract response: correct ITEM titles,
+    # prices below the titles, and a first-item price misclassified as SUBTOTAL.
+    blocks, rows = [], []
+    for top in (0.130, 0.283, 0.437):
+        rows.append({"LineItemExpenseFields": [
+            expense_field("ITEM", "TOYOTAVIOS", geometry(0.033, top, 0.221, 0.015)),
+            expense_field("PRICE", "S$ 81.75", geometry(0.040, top + 0.097, 0.150, 0.018)),
+            expense_field("EXPENSE_ROW", (
+                "TOYOTAVIOS\nDate: 14/09/2024\nStart time: 08: 30 Remove\n"
+                "End time: 10: 10\nS$ 81.75 w/GST"
+            ), geometry(0.033, top, 0.908, 0.116)),
+        ]})
+        blocks.append(word("TOYOTAVIOS", 0.033, top, 0.221))
+    rows.append({"LineItemExpenseFields": [
+        expense_field("ITEM", "Miscellaneous charges", geometry(0.035, 0.590, 0.384)),
+        expense_field("PRICE", "S$ 0.00", geometry(0.838, 0.590, 0.125)),
+    ]})
+    blocks.append(word("Miscellaneous charges", 0.035, 0.590, 0.384))
+    total = expense_field("TOTAL", "S$ 245.25")
+    total["LabelDetection"] = {"Text": "Total Amount\n(Inclusive of GST)"}
+    return {"ExpenseDocuments": [{
+        "Blocks": blocks, "LineItemGroups": [{"LineItems": rows}],
+        "SummaryFields": [
+            expense_field("SUBTOTAL", "S$ 81.75", geometry(0.040, 0.227, 0.150, 0.018)),
+            total, expense_field("OTHER", "S$ 520.97"),
+        ],
+    }]}
+
+
+@pytest.mark.parametrize("miscellaneous", ["0.00", "5.00"])
+def test_booking_cart_keeps_each_title_and_omits_zero_charges(booking_cart_response, miscellaneous):
+    document = booking_cart_response["ExpenseDocuments"][0]
+    document["LineItemGroups"][0]["LineItems"][-1]["LineItemExpenseFields"][1]["ValueDetection"]["Text"] = miscellaneous
+    total = "245.25" if miscellaneous == "0.00" else "250.25"
+    document["SummaryFields"][1]["ValueDetection"]["Text"] = total
+
+    receipt = service.parse_receipts(booking_cart_response)[0]
+
+    expected = (service.ReceiptItem("TOYOTAVIOS", "81.75"),) * 3
+    if miscellaneous != "0.00":
+        expected += (service.ReceiptItem("Miscellaneous charges", miscellaneous),)
+    assert receipt.items == expected
+    assert receipt.subtotal == ""
+    assert receipt.total == total
+    assert receipt.tax == ""  # w/GST is inclusive; no extra tax is invented.
+
+
+@pytest.mark.parametrize("mismatch", ["missing_end_time", "different_page", "price_outside_row"])
+def test_unaligned_booking_title_requires_a_matching_complete_row(booking_cart_response, mismatch):
+    fields = booking_cart_response["ExpenseDocuments"][0]["LineItemGroups"][0]["LineItems"][0]["LineItemExpenseFields"]
+    if mismatch == "missing_end_time":
+        fields[2]["ValueDetection"]["Text"] = fields[2]["ValueDetection"]["Text"].replace("End time:", "Notes:")
+    elif mismatch == "different_page":
+        fields[2]["PageNumber"] = 2
+    else:
+        fields[2]["ValueDetection"]["Geometry"] = geometry(0.033, 0.130, 0.908, 0.030)
+
+    receipt = service.parse_receipts(booking_cart_response)[0]
+
+    assert receipt.items == (service.ReceiptItem("TOYOTAVIOS", "81.75"),) * 2
+
+
+def test_real_unlabelled_subtotal_separate_from_item_prices_is_preserved(booking_cart_response):
+    subtotal = booking_cart_response["ExpenseDocuments"][0]["SummaryFields"][0]
+    subtotal["ValueDetection"] = {"Text": "245.25", "Geometry": geometry(0.80, 0.65, 0.17)}
+
+    assert service.parse_receipts(booking_cart_response)[0].subtotal == "245.25"
+
+
+@pytest.fixture
+def booking_cart_ocr_response(booking_cart_response):
+    document = booking_cart_response["ExpenseDocuments"][0]
+    for top in (0.130, 0.283, 0.437):
+        for text, offset in (
+            ("TOYOTAVIOS", 0), ("Date: 14/09/2024", 0.026),
+            ("Start time: 08:30", 0.051), ("End time: 10:10", 0.075),
+            ("S$ 81.75 w/GST", 0.097),
+        ):
+            document["Blocks"].append({
+                "BlockType": "LINE", "Text": text, "Page": 1,
+                "Geometry": geometry(0.035, top + offset, 0.25, 0.014),
+            })
+    return booking_cart_response
+
+
+@pytest.mark.parametrize("omitted", [(), (0,), (1,), (2,), (0, 1, 2), "all_groups"])
+def test_booking_ocr_recovers_missing_rows_without_merging_identical_items(booking_cart_ocr_response, omitted):
+    document = booking_cart_ocr_response["ExpenseDocuments"][0]
+    if omitted == "all_groups":
+        document["LineItemGroups"] = []
+    else:
+        group = document["LineItemGroups"][0]
+        group["LineItems"] = [row for index, row in enumerate(group["LineItems"]) if index not in omitted]
+
+    receipt = service.parse_receipts(booking_cart_ocr_response)[0]
+
+    assert receipt.items == (service.ReceiptItem("TOYOTAVIOS", "81.75"),) * 3
+    assert receipt.subtotal == ""
+    assert receipt.total == "245.25"
+
+
+@pytest.mark.parametrize("incomplete", ["missing_price", "partial_name", "missing_expense_row"])
+def test_booking_ocr_recovers_incomplete_structured_rows(booking_cart_ocr_response, incomplete):
+    rows = booking_cart_ocr_response["ExpenseDocuments"][0]["LineItemGroups"][0]["LineItems"]
+    fields = rows[1]["LineItemExpenseFields"]
+    if incomplete == "partial_name":
+        fields[0]["ValueDetection"]["Text"] = "Start time: 12:45"
+    else:
+        fields.pop(1 if incomplete == "missing_price" else 2)
+
+    receipt = service.parse_receipts(booking_cart_ocr_response)[0]
+
+    assert receipt.items == (service.ReceiptItem("TOYOTAVIOS", "81.75"),) * 3
+
+
+@pytest.mark.parametrize("missing", ["price", "title", "same_page_details"])
+def test_booking_recovery_requires_a_visible_title_details_and_price(booking_cart_ocr_response, missing):
+    document = booking_cart_ocr_response["ExpenseDocuments"][0]
+    document["LineItemGroups"][0]["LineItems"].pop(1)
+    lines = [block for block in document["Blocks"] if block["BlockType"] == "LINE"]
+    if missing == "same_page_details":
+        lines[8]["Page"] = 2
+    else:
+        document["Blocks"].remove(lines[9 if missing == "price" else 5])
+
+    receipt = service.parse_receipts(booking_cart_ocr_response)[0]
+
+    # The total alone must never be used to invent a third item.
+    assert receipt.items == (service.ReceiptItem("TOYOTAVIOS", "81.75"),) * 2
+    assert receipt.total == "245.25"
+
+
+def test_recovered_bookings_preserve_other_paid_items_in_display_order(booking_cart_ocr_response):
+    document = booking_cart_ocr_response["ExpenseDocuments"][0]
+    document["LineItemGroups"][0]["LineItems"][-1]["LineItemExpenseFields"][1]["ValueDetection"]["Text"] = "5.00"
+    document["SummaryFields"][1]["ValueDetection"]["Text"] = "250.25"
+
+    receipt = service.parse_receipts(booking_cart_ocr_response)[0]
+
+    assert receipt.items == (service.ReceiptItem("TOYOTAVIOS", "81.75"),) * 3 + (
+        service.ReceiptItem("Miscellaneous charges", "5.00"),
+    )
+    assert receipt.total == "250.25"
+
+
+def test_booking_recovery_preserves_detected_quantities(booking_cart_ocr_response):
+    rows = booking_cart_ocr_response["ExpenseDocuments"][0]["LineItemGroups"][0]["LineItems"]
+    rows[0]["LineItemExpenseFields"].append(expense_field("QUANTITY", "I"))
+    rows[2]["LineItemExpenseFields"].append(expense_field("QUANTITY", "2"))
+
+    receipt = service.parse_receipts(booking_cart_ocr_response)[0]
+
+    assert receipt.items == (
+        service.ReceiptItem("TOYOTAVIOS", "81.75", "1"),
+        service.ReceiptItem("TOYOTAVIOS", "81.75"),
+        service.ReceiptItem("TOYOTAVIOS", "81.75", "2"),
+    )
+
+
+def test_cart_upload_summary_keeps_booking_missing_from_structured_rows(
+    services, textract, receipt_image, booking_cart_ocr_response, owner_profile,
+):
+    import features  # noqa: F401
+    from core.router import router
+    from features.split import repository
+    from support import message_update, photo_update
+
+    document = booking_cart_ocr_response["ExpenseDocuments"][0]
+    document["LineItemGroups"][0]["LineItems"].pop(1)
+    services.telegram.files["receipt"] = receipt_image
+    textract.add_response("analyze_expense", booking_cart_ocr_response, {"Document": {"Bytes": receipt_image}})
+
+    router.dispatch_update(message_update("/split"), services)
+    router.dispatch_update(photo_update(), services)
+
+    text = services.telegram.sent[-1]["text"]
+    assert "Receipt 1:" in text
+    for number in (1, 2, 3):
+        assert f"{number}. TOYOTAVIOS - 81.75" in text
+    assert text.count("TOYOTAVIOS - 81.75") == 3
+    assert "Total: 245.25" in text
+    assert "Miscellaneous charges" not in text
+    expense, = repository.get_session(1, 10)["expenses"]
+    assert len(expense["items"]) == 3
+    assert expense["totalCents"] == 24525

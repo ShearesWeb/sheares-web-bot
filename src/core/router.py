@@ -51,19 +51,22 @@ class Router:
             return
         if sender.get("is_bot"):
             return
-        remember_user(sender)
         text = message.get("text", "")
         handler = self._commands.get(_command_name(text))
+        is_command = handler is not None
+        chat_type = message["chat"].get("type", "private" if message["chat"]["id"] > 0 else "group")
         attachment = None
         if not handler:
             kind, attachment = _attachment(message)
             handler = self._messages.get(kind)
         if handler:
+            if is_command or chat_type == "private":
+                remember_user(sender)
             handler(Context(
                 user_id=sender["id"], chat_id=message["chat"]["id"], text=text, data="", message_id=None,
                 telegram=services.telegram, scheduler=services.scheduler, attachment=attachment,
                 update_id=update_id,
-                chat_type=message["chat"].get("type", "private" if message["chat"]["id"] > 0 else "group"),
+                chat_type=chat_type,
                 shared_users=tuple(message.get("users_shared", {}).get("users", [])),
                 shared_request_id=message.get("users_shared", {}).get("request_id"),
                 chat_title=message["chat"].get("title", ""), shared_chat=message.get("chat_shared"),
@@ -74,11 +77,11 @@ class Router:
             return
         if not callback.get("from") or callback["from"].get("is_bot"):
             return
-        remember_user(callback["from"])
         data = callback["data"]
         matches = [prefix for prefix in self._callbacks if data.startswith(prefix)]
         if not matches:
             return
+        remember_user(callback["from"])
         message = callback["message"]
         # The button clicker is callback.from, not the bot that sent the message.
         self._callbacks[max(matches, key=len)](Context(

@@ -1,11 +1,13 @@
 import base64
 import json
 import logging
+from unittest.mock import Mock
 
 import pytest
 
 import app
 from core.router import Router
+from core.telegram import TelegramError
 from support import FakeTelegram, message_update
 
 
@@ -118,7 +120,10 @@ class PollingTelegram(FakeTelegram):
         self.offsets.append(offset)
         if not self.batches:
             raise StopPolling
-        return self.batches.pop(0)
+        batch = self.batches.pop(0)
+        if isinstance(batch, Exception):
+            raise batch
+        return batch
 
 
 def test_poll_refuses_bot_with_webhook(monkeypatch):
@@ -150,3 +155,64 @@ def test_poll_survives_failing_update_and_advances_offset(monkeypatch, caplog):
     assert seen == ["/ok"]
     assert telegram.offsets == [None, 9]
     assert "Failed to handle update 7" in caplog.text
+
+
+def test_poll_retries_network_failures_with_capped_backoff_and_keeps_offset(monkeypatch, caplog):
+    router = Router()
+    seen = []
+    router.command("/ok")(lambda ctx: seen.append(ctx.update_id))
+    telegram = PollingTelegram("", [
+        [message_update("/ok", update_id=7)],
+        TelegramError("secret-token"), *[TelegramError("Bad gateway", code=503) for _ in range(6)],
+        [], TelegramError("Connection lost"), [message_update("/ok", update_id=8)],
+    ])
+    sleep = Mock()
+    monkeypatch.setattr(app, "router", router)
+    monkeypatch.setattr(app, "TelegramClient", lambda token: telegram)
+    monkeypatch.setattr(app.time, "sleep", sleep)
+
+    with caplog.at_level(logging.INFO), pytest.raises(StopPolling):
+        app.poll()
+
+    assert seen == [7, 8]
+    assert telegram.offsets == [None, *([8] * 10), 9]
+    assert [call.args[0] for call in sleep.call_args_list] == [1, 2, 4, 8, 16, 30, 30, 1]
+    assert "Telegram connection restored" in caplog.text
+    assert "secret-token" not in caplog.text
+
+
+def test_poll_retries_the_startup_connection_check(monkeypatch):
+    telegram = PollingTelegram("", [])
+    attempts = iter([TelegramError("Offline"), {"url": ""}])
+
+    def get_webhook_info():
+        result = next(attempts)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    sleep = Mock()
+    monkeypatch.setattr(telegram, "get_webhook_info", get_webhook_info)
+    monkeypatch.setattr(app, "TelegramClient", lambda token: telegram)
+    monkeypatch.setattr(app.time, "sleep", sleep)
+
+    with pytest.raises(StopPolling):
+        app.poll()
+
+    sleep.assert_called_once_with(1)
+    assert telegram.offsets == [None]
+
+
+@pytest.mark.parametrize("code", [401, 403, 409, 429])
+def test_poll_does_not_retry_permanent_or_rate_limit_errors(monkeypatch, code):
+    sleep = Mock()
+    monkeypatch.setattr(app.time, "sleep", sleep)
+
+    def get_updates():
+        raise TelegramError("Rejected", code=code)
+
+    with pytest.raises(TelegramError) as error:
+        app._poll_request(get_updates)
+
+    assert error.value.code == code
+    sleep.assert_not_called()

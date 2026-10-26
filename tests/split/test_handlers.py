@@ -39,7 +39,7 @@ def test_split_upload_returns_items_once_and_keeps_collecting(
 
 
 @pytest.mark.parametrize("user_id, chat_id", [(1, 10), (2, 10), (1, 20)])
-def test_photos_without_a_matching_session_prompt_restart_without_analysis(services, textract, user_id, chat_id):
+def test_photos_without_a_matching_session_are_ignored_without_analysis(services, textract, user_id, chat_id):
     seed_profile(user_id, "A")
     if (user_id, chat_id) != (1, 10):
         router.dispatch_update(message_update("/split"), services)
@@ -47,9 +47,7 @@ def test_photos_without_a_matching_session_prompt_restart_without_analysis(servi
 
     router.dispatch_update(photo_update(user_id=user_id, chat_id=chat_id), services)
 
-    assert len(services.telegram.sent) == sent_before + 1
-    assert services.telegram.sent[-1]["text"] == "There's no active split session. Send /split to start again."
-    assert services.telegram.sent[-1]["chat_id"] == chat_id
+    assert len(services.telegram.sent) == sent_before
     assert services.telegram.downloaded == []
 
 
@@ -187,3 +185,37 @@ def test_formatter_receives_normalized_quantities_even_for_direct_receipt_items(
     text = "\n".join(handlers.receipt_messages([receipt]))
 
     assert "D62 ICE GINGER TEA (QTY: 1) - 2.00" in text
+
+
+@pytest.mark.parametrize("total_type", ["AMOUNT_DUE", "SUBTOTAL"])
+def test_png_with_total_due_and_blank_total_is_added(services, textract, receipt_image, expense_response, total_type):
+    # Model the printed items and summary in images/image.png; AWS stays stubbed.
+    document = expense_response["ExpenseDocuments"][0]
+    document["LineItemGroups"][0]["LineItems"] = [{"LineItemExpenseFields": [
+        {"Type": {"Text": kind}, "ValueDetection": {"Text": value}}
+        for kind, value in (("ITEM", name), ("QUANTITY", quantity), ("PRICE", price))
+    ]} for name, quantity, price in (("Cosmo Woo Woo", "1", "15.00"), ("Hawaiian Paloma", "2", "30.00"))]
+    document["SummaryFields"] = [
+        {"Type": {"Text": kind}, "ValueDetection": {"Text": value}}
+        for kind, value in (("SUBTOTAL", "45.00"), ("SERVICE_CHARGE", "4.50"), ("TAX", "4.46"),
+                            (total_type, "53.96"), ("TOTAL", "________"))
+    ]
+    # The supplied Textract JSON classified the printed Total Due as SUBTOTAL.
+    document["SummaryFields"][-2]["LabelDetection"] = {"Text": "Total Due"}
+    document["SummaryFields"][1]["LabelDetection"] = {"Text": "10% Service Charge"}
+    document["SummaryFields"][2]["LabelDetection"] = {"Text": "9% GST"}
+    services.telegram.files["receipt"] = receipt_image
+    textract.add_response("analyze_expense", expense_response, {"Document": {"Bytes": receipt_image}})
+    router.dispatch_update(message_update("/split"), services)
+
+    router.dispatch_update(document_update(), services)
+
+    session = repository.get_session(1, 10)
+    assert len(session["expenses"]) == 1
+    assert session["expenses"][0]["totalCents"] == 5396
+    assert session["expenses"][0]["taxLabel"] == "9% GST"
+    assert session["expenses"][0]["serviceChargeLabel"] == "10% Service Charge"
+    result = services.telegram.sent[-1]["text"]
+    assert "Cosmo Woo Woo (QTY: 1) - 15.00" in result
+    assert "Hawaiian Paloma (QTY: 2) - 30.00" in result
+    assert "Subtotal: 45.00\n10% Service Charge: 4.50\n9% GST: 4.46\nTotal: 53.96" in result

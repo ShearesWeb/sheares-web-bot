@@ -53,10 +53,10 @@ class RecordingScheduler:
     def schedule(self, name, run_at, job, payload):
         self.scheduled.append({"name": name, "run_at": run_at, "job": job, "payload": payload})
 
-    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at):
+    def schedule_recurring(self, name, interval_seconds, job, payload, *, start_at, end_at=None):
         self.scheduled.append({
             "name": name, "interval_seconds": interval_seconds, "job": job,
-            "payload": payload, "start_at": start_at,
+            "payload": payload, "start_at": start_at, "end_at": end_at,
         })
 
     def cancel(self, name):
