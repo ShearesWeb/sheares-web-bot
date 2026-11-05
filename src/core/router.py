@@ -16,6 +16,14 @@ class Router:
         return _registrar(self._commands, name)
 
     def message(self, kind):
+        if kind == "text":
+            def register(fn):
+                # Text updates can belong to multiple features. Handlers run in
+                # registration order until one claims the message by returning
+                # True; unclaimed text continues to the next handler.
+                self._messages.setdefault(kind, []).append(fn)
+                return fn
+            return register
         return _registrar(self._messages, kind)
 
     def callback(self, prefix):
@@ -59,7 +67,7 @@ class Router:
             kind, attachment = _attachment(message)
             handler = self._messages.get(kind)
         if handler:
-            handler(Context(
+            ctx = Context(
                 user_id=sender["id"], chat_id=message["chat"]["id"], text=text, data="", message_id=None,
                 telegram=services.telegram, scheduler=services.scheduler, attachment=attachment,
                 update_id=update_id,
@@ -67,7 +75,11 @@ class Router:
                 shared_users=tuple(message.get("users_shared", {}).get("users", [])),
                 shared_request_id=message.get("users_shared", {}).get("request_id"),
                 chat_title=message["chat"].get("title", ""), shared_chat=message.get("chat_shared"),
-            ))
+            )
+            handlers = handler if isinstance(handler, list) else [handler]
+            for message_handler in handlers:
+                if message_handler(ctx):
+                    break
 
     def _dispatch_callback(self, callback, services):
         if not callback.get("message") or "data" not in callback:
