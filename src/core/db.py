@@ -15,3 +15,7 @@ def users_table():
 
 def laundry_table():
     return _dynamodb().Table(os.environ["LAUNDRY_TABLE_NAME"])
+
+
+def facilities_table():
+    return _dynamodb().Table(os.environ["FACILITIES_TABLE_NAME"])

@@ -28,6 +28,7 @@ module "bot_function" {
     INTRANET_BASE_URL       = var.intranet_base_url
     USERS_TABLE_NAME        = aws_dynamodb_table.users.name
     LAUNDRY_TABLE_NAME      = aws_dynamodb_table.laundry_machines.name
+    FACILITIES_TABLE_NAME   = aws_dynamodb_table.facilities.name
     SCHEDULER_ROLE_ARN      = module.scheduler_execution_role.role.arn
     SCHEDULE_TARGET_ARN     = local.bot_function_arn
   }

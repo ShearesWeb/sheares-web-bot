@@ -22,7 +22,11 @@ Here are some basic commands to get you started:
 • /wash - Track your washing progress
 • /dry - Track your drying progress
 
-_More features coming soon!_
+
+*Facilities*
+/book - View facility availability in your block
+/book <facility_name> - Book a facility
+
             """
 
 
